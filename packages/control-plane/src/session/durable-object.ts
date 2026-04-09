@@ -15,8 +15,10 @@ import { generateId, hashToken, encryptToken, decryptToken } from "../auth/crypt
 import { getGitHubAppConfig, getCachedInstallationToken } from "../auth/github-app";
 import { createModalClient } from "../sandbox/client";
 import { createDaytonaRestClient } from "../sandbox/daytona-rest-client";
+import { createClaudeRestClient } from "../sandbox/claude-rest-client";
 import { createModalProvider } from "../sandbox/providers/modal-provider";
 import { createDaytonaProvider } from "../sandbox/providers/daytona-provider";
+import { createClaudeProvider } from "../sandbox/providers/claude-provider";
 import { resolveSandboxBackendName } from "../sandbox/provider-name";
 import { createLogger, parseLogLevel } from "../logger";
 import type { Logger } from "../logger";
@@ -534,7 +536,30 @@ export class SessionDO extends DurableObject<Env> {
     const sandboxBackend = resolveSandboxBackendName(this.env.SANDBOX_PROVIDER);
 
     const provider =
-      sandboxBackend === "daytona"
+      sandboxBackend === "claude"
+        ? (() => {
+            if (!this.env.ANTHROPIC_API_KEY) {
+              throw new Error("ANTHROPIC_API_KEY is required when SANDBOX_PROVIDER=claude");
+            }
+            const claudeClient = createClaudeRestClient({ apiKey: this.env.ANTHROPIC_API_KEY });
+
+            const scmProvider = resolveScmProviderFromEnv(this.env.SCM_PROVIDER);
+            const appConfig = getGitHubAppConfig(this.env);
+
+            const getCloneToken: () => Promise<string | null> =
+              scmProvider === "gitlab"
+                ? () => Promise.resolve(this.env.GITLAB_ACCESS_TOKEN ?? null)
+                : appConfig
+                  ? () => getCachedInstallationToken(appConfig, this.env)
+                  : () => Promise.resolve(null);
+
+            return createClaudeProvider(
+              claudeClient,
+              { scmProvider: this.sourceControlProvider.name },
+              getCloneToken
+            );
+          })()
+        : sandboxBackend === "daytona"
         ? (() => {
             if (
               !this.env.DAYTONA_API_URL ||
@@ -1375,11 +1400,130 @@ export class SessionDO extends DurableObject<Env> {
   }
 
   /**
+   * Stream events from Claude sessions API and forward them to DO.
+   */
+  private async streamClaudeEvents(): Promise<void> {
+    const sandbox = this.getSandbox();
+    if (!sandbox || !sandbox.modal_object_id || !this.env.ANTHROPIC_API_KEY) return;
+
+    try {
+      const claudeClient = createClaudeRestClient({ apiKey: this.env.ANTHROPIC_API_KEY });
+      const response = await claudeClient.streamEvents(sandbox.modal_object_id);
+
+      // Use the global WebSocketPair class available in Cloudflare Workers
+      const { 0: clientWs, 1: serverWs } = new WebSocketPair();
+      (clientWs as any).accept();
+
+      // Update sandbox status so DO sets sandbox_status to ready
+      this.repository.updateSandboxStatus("ready");
+      this.wsManager.acceptAndSetSandboxSocket(serverWs as any, sandbox.id);
+
+      // Simple SSE parser
+      const reader = response.body?.getReader();
+      if (!reader) return;
+
+      const decoder = new TextDecoder();
+      let buffer = "";
+      let eventType = "";
+
+      (clientWs as any).addEventListener("message", (event: any) => {
+        try {
+          const msg = JSON.parse(event.data.toString());
+          if (msg.type === "prompt") {
+            const claudeEvents = [{
+              type: "user.message",
+              content: [{ type: "text", text: msg.content }]
+            }];
+            this.ctx.waitUntil(claudeClient.sendEvents(sandbox.modal_object_id!, claudeEvents));
+          } else if (msg.type === "stop") {
+             // For now we don't have a direct cancel API in Managed Agents, but could send a message
+             this.ctx.waitUntil(claudeClient.sendEvents(sandbox.modal_object_id!, [{
+               type: "user.message",
+               content: [{ type: "text", text: "Stop current action" }]
+             }]));
+          }
+        } catch (e) {
+           this.log.error("Failed to parse clientWs message", { error: String(e) });
+        }
+      });
+
+      try {
+        while (true) {
+          const { done, value } = await reader.read();
+          if (done) break;
+          buffer += decoder.decode(value, { stream: true });
+
+          const lines = buffer.split("\n");
+          buffer = lines.pop() ?? "";
+
+          for (const line of lines) {
+            if (line.startsWith("event: ")) {
+              eventType = line.slice("event: ".length).trim();
+            } else if (line.startsWith("data: ")) {
+              const dataStr = line.slice("data: ".length).trim();
+              if (dataStr && eventType === "agent.message") {
+                 try {
+                   const data = JSON.parse(dataStr);
+                   for (const content of data.content) {
+                     if (content.type === "text") {
+                        (clientWs as any).send(JSON.stringify({
+                           type: "agent_message",
+                           messageId: this.repository.getProcessingMessage()?.id ?? "unknown",
+                           message: content.text
+                        }));
+                     }
+                   }
+                 } catch (e) {
+                   // ignore parse errors
+                 }
+              } else if (dataStr && eventType === "agent.tool_use") {
+                 try {
+                   const data = JSON.parse(dataStr);
+                   (clientWs as any).send(JSON.stringify({
+                     type: "tool_use",
+                     messageId: this.repository.getProcessingMessage()?.id ?? "unknown",
+                     name: data.name,
+                     input: data.input
+                   }));
+                 } catch (e) {
+                   // ignore parse errors
+                 }
+              } else if (dataStr && eventType === "session.status_idle") {
+                 try {
+                   const data = JSON.parse(dataStr);
+                   if (data.stop_reason?.type === "end_turn") {
+                     (clientWs as any).send(JSON.stringify({
+                       type: "execution_complete",
+                       messageId: this.repository.getProcessingMessage()?.id ?? "unknown",
+                       success: true
+                     }));
+                   }
+                 } catch (e) {
+                   // ignore parse errors
+                 }
+              }
+            }
+          }
+        }
+      } finally {
+        (clientWs as any).close();
+      }
+
+    } catch (e) {
+      this.log.error("Error streaming Claude events", { error: String(e) });
+    }
+  }
+
+  /**
    * Spawn a sandbox via Modal.
    * Delegates to the lifecycle manager.
    */
   private async spawnSandbox(): Promise<void> {
     await this.lifecycleManager.spawnSandbox();
+
+    if (resolveSandboxBackendName(this.env.SANDBOX_PROVIDER) === "claude") {
+      this.ctx.waitUntil(this.streamClaudeEvents());
+    }
   }
 
   /**

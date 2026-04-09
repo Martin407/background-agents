@@ -2,7 +2,7 @@
  * Sandbox backend selection utilities.
  */
 
-export type SandboxBackendName = "modal" | "daytona";
+export type SandboxBackendName = "modal" | "daytona" | "claude";
 
 /**
  * Resolve the configured sandbox backend.
@@ -18,6 +18,10 @@ export function resolveSandboxBackendName(value: string | undefined): SandboxBac
 
   if (normalized === "daytona") {
     return "daytona";
+  }
+
+  if (normalized === "claude") {
+    return "claude";
   }
 
   throw new Error(`Unsupported SANDBOX_PROVIDER: ${value}`);
