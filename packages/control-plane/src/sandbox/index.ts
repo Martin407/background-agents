@@ -35,6 +35,16 @@ export {
 // Modal provider
 export { ModalSandboxProvider, createModalProvider } from "./providers/modal-provider";
 export { DaytonaSandboxProvider, createDaytonaProvider } from "./providers/daytona-provider";
+export { ClaudeSandboxProvider, createClaudeProvider } from "./providers/claude-provider";
+export {
+  ClaudeRestClient,
+  ClaudeApiError,
+  createClaudeRestClient,
+  type ClaudeRestConfig,
+  type ClaudeCreateEnvironmentParams,
+  type ClaudeCreateAgentParams,
+  type ClaudeCreateSessionParams,
+} from "./claude-rest-client";
 export {
   DaytonaRestClient,
   DaytonaNotFoundError,
