@@ -47,6 +47,7 @@ export interface WsClientMappingResult {
 export interface SandboxCircuitBreakerState {
   status: string;
   created_at: number;
+  modal_object_id: string | null;
   snapshot_image_id: string | null;
   spawn_failure_count: number | null;
   last_spawn_failure: number | null;
@@ -69,6 +70,8 @@ export interface UpsertSessionData {
   parentSessionId?: string | null;
   spawnSource?: SpawnSource;
   spawnDepth?: number;
+  codeServerEnabled?: boolean;
+  sandboxSettings?: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -192,6 +195,11 @@ export interface SpawnSandboxData {
   modalSandboxId: string;
 }
 
+export interface ResumeSandboxData {
+  status: SandboxStatus;
+  createdAt: number;
+}
+
 /**
  * SqlStorage interface matching Cloudflare's SqlStorage.
  * Used to allow mock injection for testing.
@@ -225,8 +233,8 @@ export class SessionRepository {
 
   upsertSession(data: UpsertSessionData): void {
     this.sql.exec(
-      `INSERT OR REPLACE INTO session (id, session_name, title, repo_owner, repo_name, repo_id, base_branch, model, reasoning_effort, status, parent_session_id, spawn_source, spawn_depth, created_at, updated_at)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      `INSERT OR REPLACE INTO session (id, session_name, title, repo_owner, repo_name, repo_id, base_branch, model, reasoning_effort, status, parent_session_id, spawn_source, spawn_depth, code_server_enabled, sandbox_settings, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       data.id,
       data.sessionName,
       data.title,
@@ -240,6 +248,8 @@ export class SessionRepository {
       data.parentSessionId ?? null,
       data.spawnSource ?? "user",
       data.spawnDepth ?? 0,
+      data.codeServerEnabled ? 1 : 0,
+      data.sandboxSettings ?? null,
       data.createdAt,
       data.updatedAt
     );
@@ -264,6 +274,15 @@ export class SessionRepository {
     );
   }
 
+  updateSessionTitle(sessionId: string, title: string, updatedAt: number): void {
+    this.sql.exec(
+      `UPDATE session SET title = ?, updated_at = ? WHERE id = ?`,
+      title,
+      updatedAt,
+      sessionId
+    );
+  }
+
   updateSessionStatus(sessionId: string, status: SessionStatus, updatedAt: number): void {
     this.sql.exec(
       `UPDATE session SET status = ?, updated_at = ? WHERE id = ?`,
@@ -285,7 +304,7 @@ export class SessionRepository {
 
   getSandboxWithCircuitBreaker(): SandboxCircuitBreakerState | null {
     const result = this.sql.exec(
-      `SELECT status, created_at, snapshot_image_id, spawn_failure_count, last_spawn_failure FROM sandbox LIMIT 1`
+      `SELECT status, created_at, modal_object_id, snapshot_image_id, spawn_failure_count, last_spawn_failure FROM sandbox LIMIT 1`
     );
     const rows = this.rows<SandboxCircuitBreakerState>(result);
     return rows[0] ?? null;
@@ -322,6 +341,18 @@ export class SessionRepository {
       data.createdAt,
       data.authTokenHash,
       data.modalSandboxId
+    );
+  }
+
+  updateSandboxForResume(data: ResumeSandboxData): void {
+    this.sql.exec(
+      `UPDATE sandbox SET
+         status = ?,
+         created_at = ?,
+         last_heartbeat = NULL
+       WHERE id = (SELECT id FROM sandbox LIMIT 1)`,
+      data.status,
+      data.createdAt
     );
   }
 
@@ -362,6 +393,53 @@ export class SessionRepository {
       `UPDATE sandbox SET last_spawn_error = ?, last_spawn_error_at = ? WHERE id = (SELECT id FROM sandbox LIMIT 1)`,
       error,
       timestamp
+    );
+  }
+
+  updateSandboxCodeServer(url: string, password: string): void {
+    this.sql.exec(
+      `UPDATE sandbox SET code_server_url = ?, code_server_password = ? WHERE id = (SELECT id FROM sandbox LIMIT 1)`,
+      url,
+      password
+    );
+  }
+
+  clearSandboxCodeServer(): void {
+    this.sql.exec(
+      `UPDATE sandbox SET code_server_url = NULL, code_server_password = NULL WHERE id = (SELECT id FROM sandbox LIMIT 1)`
+    );
+  }
+
+  clearSandboxCodeServerUrl(): void {
+    this.sql.exec(
+      `UPDATE sandbox SET code_server_url = NULL WHERE id = (SELECT id FROM sandbox LIMIT 1)`
+    );
+  }
+
+  updateSandboxTunnelUrls(urls: Record<string, string>): void {
+    this.sql.exec(
+      `UPDATE sandbox SET tunnel_urls = ? WHERE id = (SELECT id FROM sandbox LIMIT 1)`,
+      JSON.stringify(urls)
+    );
+  }
+
+  clearSandboxTunnelUrls(): void {
+    this.sql.exec(
+      `UPDATE sandbox SET tunnel_urls = NULL WHERE id = (SELECT id FROM sandbox LIMIT 1)`
+    );
+  }
+
+  updateSandboxTtyd(url: string, encryptedToken: string): void {
+    this.sql.exec(
+      `UPDATE sandbox SET ttyd_url = ?, ttyd_token = ? WHERE id = (SELECT id FROM sandbox LIMIT 1)`,
+      url,
+      encryptedToken
+    );
+  }
+
+  clearSandboxTtyd(): void {
+    this.sql.exec(
+      `UPDATE sandbox SET ttyd_url = NULL, ttyd_token = NULL WHERE id = (SELECT id FROM sandbox LIMIT 1)`
     );
   }
 

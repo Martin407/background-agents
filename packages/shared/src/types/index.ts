@@ -295,12 +295,16 @@ export type ServerMessage =
       cursor: { timestamp: number; id: string } | null;
     }
   | { type: "session_status"; status: SessionStatus }
+  | { type: "session_title"; title: string }
   | {
       type: "child_session_update";
       childSessionId: string;
       status: SessionStatus;
       title: string | null;
     }
+  | { type: "code_server_info"; url: string; password: string }
+  | { type: "ttyd_info"; url: string; token: string }
+  | { type: "tunnel_urls"; urls: Record<string, string> }
   | { type: "error"; code: string; message: string };
 
 // Session state sent to clients
@@ -319,6 +323,11 @@ export interface SessionState {
   reasoningEffort?: string;
   isProcessing?: boolean;
   parentSessionId?: string | null;
+  codeServerUrl?: string | null;
+  codeServerPassword?: string | null;
+  tunnelUrls?: Record<string, string> | null;
+  ttydUrl?: string | null;
+  ttydToken?: string | null;
 }
 
 // Participant presence info
@@ -340,6 +349,8 @@ export interface InstallationRepository {
   description: string | null;
   private: boolean;
   defaultBranch: string;
+  language?: string | null;
+  topics?: string[];
 }
 
 export interface RepoMetadata {
@@ -363,6 +374,8 @@ export interface RepoConfig {
   description: string;
   defaultBranch: string;
   private: boolean;
+  language?: string | null;
+  topics?: string[];
   aliases?: string[];
   keywords?: string[];
   channelAssociations?: string[];
@@ -433,6 +446,7 @@ export interface UserPreferences {
   userId: string;
   model: string;
   reasoningEffort?: string;
+  branch?: string;
   updatedAt: number;
 }
 
@@ -523,6 +537,7 @@ export interface SpawnContext {
   baseBranch: string | null;
   owner: {
     userId: string;
+    scmUserId: string | null;
     scmLogin: string | null;
     scmName: string | null;
     scmEmail: string | null;
@@ -552,9 +567,17 @@ export interface ChildSessionDetail {
 
 // ─── Automation Engine ────────────────────────────────────────────────────────
 
-export type AutomationTriggerType = "schedule";
+export type AutomationTriggerType =
+  | "schedule"
+  | "github_event"
+  | "linear_event"
+  | "sentry"
+  | "webhook";
 
 export type AutomationRunStatus = "starting" | "running" | "completed" | "failed" | "skipped";
+
+// Re-export TriggerConfig for use in automation interfaces below
+import type { TriggerConfig } from "../triggers/conditions";
 
 export interface Automation {
   id: string;
@@ -568,6 +591,7 @@ export interface Automation {
   scheduleCron: string | null;
   scheduleTz: string;
   model: string;
+  reasoningEffort: string | null;
   enabled: boolean;
   nextRunAt: number | null;
   consecutiveFailures: number;
@@ -575,6 +599,8 @@ export interface Automation {
   createdAt: number;
   updatedAt: number;
   deletedAt: number | null;
+  eventType: string | null;
+  triggerConfig: TriggerConfig | null;
 }
 
 export interface CreateAutomationRequest {
@@ -584,9 +610,13 @@ export interface CreateAutomationRequest {
   baseBranch?: string;
   instructions: string;
   triggerType?: AutomationTriggerType;
-  scheduleCron: string;
-  scheduleTz: string;
+  scheduleCron?: string;
+  scheduleTz?: string;
   model?: string;
+  reasoningEffort?: string | null;
+  eventType?: string;
+  triggerConfig?: TriggerConfig;
+  sentryClientSecret?: string;
 }
 
 export interface UpdateAutomationRequest {
@@ -595,7 +625,10 @@ export interface UpdateAutomationRequest {
   scheduleCron?: string;
   scheduleTz?: string;
   model?: string;
+  reasoningEffort?: string | null;
   baseBranch?: string;
+  eventType?: string;
+  triggerConfig?: TriggerConfig;
 }
 
 export interface AutomationRun {
@@ -611,6 +644,8 @@ export interface AutomationRun {
   createdAt: number;
   sessionTitle: string | null;
   artifactSummary: string | null;
+  triggerKey: string | null;
+  concurrencyKey: string | null;
 }
 
 export interface ListAutomationsResponse {

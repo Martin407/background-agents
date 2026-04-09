@@ -10,13 +10,18 @@ import {
   SourceControlProviderError,
   type SourceControlProviderName,
 } from "./source-control";
+import { IntegrationSettingsStore } from "./db/integration-settings";
 import { SessionIndexStore } from "./db/session-index";
 import { UserScmTokenStore, DEFAULT_TOKEN_LIFETIME_MS } from "./db/user-scm-tokens";
 import { buildSessionInternalUrl, SessionInternalPaths } from "./session/contracts";
 
 import {
   getValidModelOrDefault,
+  isValidModel,
   isValidReasoningEffort,
+  VALID_MODELS,
+  type CodeServerSettings,
+  type SandboxSettings,
   type SessionStatus,
   type CallbackContext,
   type SpawnChildSessionRequest,
@@ -30,8 +35,7 @@ import {
   parsePattern,
   json,
   error,
-  createRouteSourceControlProvider,
-  resolveInstalledRepo,
+  resolveRepoOrError,
 } from "./routes/shared";
 import { integrationSettingsRoutes } from "./routes/integration-settings";
 import { modelPreferencesRoutes } from "./routes/model-preferences";
@@ -39,6 +43,7 @@ import { reposRoutes } from "./routes/repos";
 import { repoImageRoutes } from "./routes/repo-images";
 import { secretsRoutes } from "./routes/secrets";
 import { automationRoutes } from "./routes/automations";
+import { webhookRoutes } from "./webhooks";
 
 const logger = createLogger("router");
 
@@ -46,6 +51,57 @@ const logger = createLogger("router");
 const MAX_SPAWN_DEPTH = 2;
 const MAX_CONCURRENT_CHILDREN = 5;
 const MAX_TOTAL_CHILDREN = 15;
+
+/**
+ * Resolve whether code-server should be enabled for a given repo,
+ * checking both the `enabled` setting and the `enabledRepos` allowlist.
+ */
+async function resolveCodeServerEnabled(
+  db: D1Database | undefined,
+  repoOwner: string,
+  repoName: string
+): Promise<boolean> {
+  if (!db) return false;
+  const repo = `${repoOwner}/${repoName}`;
+  try {
+    const store = new IntegrationSettingsStore(db);
+    const { enabledRepos, settings } = await store.getResolvedConfig("code-server", repo);
+    const csSettings = settings as CodeServerSettings;
+    if (csSettings.enabled !== true) return false;
+    // enabledRepos: null → all repos, [] → none, [...] → allowlist
+    if (enabledRepos !== null && !enabledRepos.includes(repo)) return false;
+    return true;
+  } catch (e) {
+    logger.warn("Failed to resolve code-server integration settings, defaulting to disabled", {
+      error: e instanceof Error ? e.message : String(e),
+    });
+    return false;
+  }
+}
+
+/**
+ * Resolve sandbox settings for a given repo, merging global defaults with per-repo overrides.
+ */
+async function resolveSandboxSettings(
+  db: D1Database | undefined,
+  repoOwner: string,
+  repoName: string
+): Promise<SandboxSettings> {
+  if (!db) return {};
+  const repo = `${repoOwner}/${repoName}`;
+  try {
+    const store = new IntegrationSettingsStore(db);
+    const { enabledRepos, settings } = await store.getResolvedConfig("sandbox", repo);
+    // enabledRepos: null → all repos, [] → none, [...] → allowlist
+    if (enabledRepos !== null && !enabledRepos.includes(repo)) return {};
+    return settings as SandboxSettings;
+  } catch (e) {
+    logger.warn("Failed to resolve sandbox settings, using defaults", {
+      error: e instanceof Error ? e.message : String(e),
+    });
+    return {};
+  }
+}
 
 const SESSION_STATUSES: SessionStatus[] = [
   "created",
@@ -99,7 +155,11 @@ function getSessionStub(env: Env, match: RegExpMatchArray): DurableObjectStub | 
 /**
  * Routes that do not require authentication.
  */
-const PUBLIC_ROUTES: RegExp[] = [/^\/health$/];
+const PUBLIC_ROUTES: RegExp[] = [
+  /^\/health$/,
+  /^\/webhooks\/sentry\/[^/]+$/,
+  /^\/webhooks\/automation\/[^/]+$/,
+];
 
 /**
  * Routes that accept sandbox authentication.
@@ -392,6 +452,11 @@ const routes: Route[] = [
     handler: handleSessionWsToken,
   },
   {
+    method: "PATCH",
+    pattern: parsePattern("/sessions/:id/title"),
+    handler: handleUpdateSessionTitle,
+  },
+  {
     method: "POST",
     pattern: parsePattern("/sessions/:id/archive"),
     handler: handleArchiveSession,
@@ -441,6 +506,9 @@ const routes: Route[] = [
 
   // Automations
   ...automationRoutes,
+
+  // Webhooks (public routes — auth handled per-route)
+  ...webhookRoutes,
 ];
 
 /**
@@ -604,6 +672,9 @@ async function handleCreateSession(
 ): Promise<Response> {
   const body = (await request.json()) as CreateSessionRequest & {
     scmToken?: string;
+    scmRefreshToken?: string;
+    scmTokenExpiresAt?: number;
+    scmUserId?: string;
     userId?: string;
     scmLogin?: string;
     scmName?: string;
@@ -623,34 +694,21 @@ async function handleCreateSession(
   const repoOwner = body.repoOwner.toLowerCase();
   const repoName = body.repoName.toLowerCase();
 
-  let repoId: number;
-  let defaultBranch: string;
-  try {
-    const provider = createRouteSourceControlProvider(env);
-    const resolved = await resolveInstalledRepo(provider, repoOwner, repoName);
-    if (!resolved) {
-      return error("Repository is not installed for the GitHub App", 404);
-    }
-    repoId = resolved.repoId;
-    defaultBranch = resolved.defaultBranch;
-  } catch (e) {
-    const message = e instanceof Error ? e.message : String(e);
-    logger.error("Failed to resolve repository", {
-      error: message,
-      repo_owner: repoOwner,
-      repo_name: repoName,
-    });
-    const isConfigError =
-      e instanceof SourceControlProviderError && e.errorType === "permanent" && !e.httpStatus;
-    return error(isConfigError ? message : "Failed to resolve repository", 500);
-  }
+  const resolved = await resolveRepoOrError(env, repoOwner, repoName, ctx, logger);
+  if (resolved instanceof Response) return resolved;
+
+  const { repoId, defaultBranch } = resolved;
 
   const userId = body.userId || "anonymous";
   const scmLogin = body.scmLogin;
   const scmName = body.scmName;
   const scmEmail = body.scmEmail;
   const scmToken = body.scmToken;
+  const scmRefreshToken = body.scmRefreshToken;
+  const scmTokenExpiresAt = body.scmTokenExpiresAt;
+  const scmUserId = body.scmUserId;
   let scmTokenEncrypted: string | null = null;
+  let scmRefreshTokenEncrypted: string | null = null;
 
   // If SCM token provided, encrypt it
   if (scmToken && env.TOKEN_ENCRYPTION_KEY) {
@@ -661,6 +719,16 @@ async function handleCreateSession(
         error: e instanceof Error ? e : String(e),
       });
       return error("Failed to process SCM token", 500);
+    }
+  }
+
+  if (scmRefreshToken && env.TOKEN_ENCRYPTION_KEY) {
+    try {
+      scmRefreshTokenEncrypted = await encryptToken(scmRefreshToken, env.TOKEN_ENCRYPTION_KEY);
+    } catch (e) {
+      logger.warn("Session created without refresh token — token refresh will be unavailable", {
+        error: e instanceof Error ? e : String(e),
+      });
     }
   }
 
@@ -677,6 +745,12 @@ async function handleCreateSession(
     body.reasoningEffort && isValidReasoningEffort(model, body.reasoningEffort)
       ? body.reasoningEffort
       : null;
+
+  // Resolve code-server integration setting and sandbox settings for this repo
+  const [codeServerEnabled, sandboxSettings] = await Promise.all([
+    resolveCodeServerEnabled(env.DB, repoOwner, repoName),
+    resolveSandboxSettings(env.DB, repoOwner, repoName),
+  ]);
 
   // Initialize session with user info and optional encrypted token
   const initResponse = await stub.fetch(
@@ -700,6 +774,11 @@ async function handleCreateSession(
           scmName,
           scmEmail,
           scmTokenEncrypted,
+          scmRefreshTokenEncrypted,
+          scmTokenExpiresAt,
+          scmUserId,
+          codeServerEnabled,
+          sandboxSettings,
         }),
       },
       ctx
@@ -708,6 +787,24 @@ async function handleCreateSession(
 
   if (!initResponse.ok) {
     return error("Failed to create session", 500);
+  }
+
+  // Populate D1 with the user's SCM tokens (non-blocking) so centralized refresh works
+  if (scmUserId && scmToken && scmRefreshToken && env.TOKEN_ENCRYPTION_KEY) {
+    ctx.executionCtx?.waitUntil(
+      new UserScmTokenStore(env.DB, env.TOKEN_ENCRYPTION_KEY)
+        .upsertTokens(
+          scmUserId,
+          scmToken,
+          scmRefreshToken,
+          scmTokenExpiresAt ?? Date.now() + DEFAULT_TOKEN_LIFETIME_MS
+        )
+        .catch((e) =>
+          logger.error("Failed to write tokens to D1", {
+            error: e instanceof Error ? e : String(e),
+          })
+        )
+    );
   }
 
   // Store session in D1 index for listing
@@ -1131,6 +1228,56 @@ async function handleSessionWsToken(
   return response;
 }
 
+async function handleUpdateSessionTitle(
+  request: Request,
+  env: Env,
+  match: RegExpMatchArray,
+  ctx: RequestContext
+): Promise<Response> {
+  const sessionId = match.groups?.id;
+  if (!sessionId) return error("Session ID required");
+
+  let userId: string | undefined;
+  let title: string | undefined;
+
+  try {
+    const body = (await request.json()) as { userId?: string; title?: string };
+    userId = body.userId;
+    title = body.title;
+  } catch (_error) {
+    // Body parsing failed, continue without userId/title
+    userId = undefined;
+    title = undefined;
+  }
+
+  const doId = env.SESSION.idFromName(sessionId);
+  const stub = env.SESSION.get(doId);
+
+  const response = await stub.fetch(
+    internalRequest(
+      buildSessionInternalUrl(SessionInternalPaths.updateTitle),
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ userId, title }),
+      },
+      ctx
+    )
+  );
+
+  if (response.ok) {
+    // read the validated title from the DO response
+    const doResult = (await response.clone().json()) as { title: string };
+    const sessionStore = new SessionIndexStore(env.DB);
+    const updated = await sessionStore.updateTitle(sessionId, doResult.title);
+    if (!updated) {
+      logger.warn("Session not found in D1 index during title update", { session_id: sessionId });
+    }
+  }
+
+  return response;
+}
+
 async function handleArchiveSession(
   request: Request,
   env: Env,
@@ -1285,7 +1432,13 @@ async function handleSpawnChild(
   const childDoId = env.SESSION.idFromName(childId);
   const childStub = env.SESSION.get(childDoId);
 
-  const model = getValidModelOrDefault(body.model || spawnContext.model);
+  // Validate explicit model from the agent; reject invalid names so the agent
+  // can self-correct instead of silently falling back to the default model.
+  const rawModel = body.model ?? spawnContext.model;
+  if (body.model !== undefined && !isValidModel(body.model)) {
+    return error(`Invalid model "${body.model}". Valid models: ${VALID_MODELS.join(", ")}`, 400);
+  }
+  const model = getValidModelOrDefault(rawModel);
   const reasoningEffort =
     body.reasoningEffort && isValidReasoningEffort(model, body.reasoningEffort)
       ? body.reasoningEffort
@@ -1300,6 +1453,12 @@ async function handleSpawnChild(
     child_depth: childDepth,
     model,
   });
+
+  // Resolve code-server integration setting and sandbox settings for child (same repo as parent)
+  const [childCodeServerEnabled, childSandboxSettings] = await Promise.all([
+    resolveCodeServerEnabled(env.DB, spawnContext.repoOwner, spawnContext.repoName),
+    resolveSandboxSettings(env.DB, spawnContext.repoOwner, spawnContext.repoName),
+  ]);
 
   // Initialize child DO
   const initResponse = await childStub.fetch(
@@ -1321,10 +1480,15 @@ async function handleSpawnChild(
           scmName: spawnContext.owner.scmName,
           scmEmail: spawnContext.owner.scmEmail,
           scmTokenEncrypted: spawnContext.owner.scmAccessTokenEncrypted,
+          scmRefreshTokenEncrypted: spawnContext.owner.scmRefreshTokenEncrypted,
+          scmTokenExpiresAt: spawnContext.owner.scmTokenExpiresAt,
+          scmUserId: spawnContext.owner.scmUserId,
           branch: spawnContext.baseBranch ?? "main",
           parentSessionId: parentId,
           spawnSource: "agent",
           spawnDepth: childDepth,
+          codeServerEnabled: childCodeServerEnabled,
+          sandboxSettings: childSandboxSettings,
         }),
       },
       ctx

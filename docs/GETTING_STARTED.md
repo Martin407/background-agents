@@ -19,7 +19,7 @@ Open-Inspect uses Terraform to automate deployment across three cloud providers:
 | -------------------------------------- | -------------------------------- | ----------------------------------------------------------------- |
 | **Cloudflare**                         | Control plane, session state     | Workers, KV namespaces, Durable Objects, D1 Database              |
 | **Vercel** _or_ **Cloudflare Workers** | Web application                  | Project + env vars (Vercel) _or_ Worker via OpenNext (Cloudflare) |
-| **Modal**                              | Sandbox execution infrastructure | App deployment, secrets, volumes                                  |
+| **Modal** _or_ **Daytona**             | Sandbox execution infrastructure | Modal app deployment _or_ control-plane config for Daytona API    |
 
 > **Web platform choice**: Set `web_platform` in your `terraform.tfvars` to `"vercel"` (default) or
 > `"cloudflare"`. The Cloudflare option deploys the Next.js app as a Cloudflare Worker using
@@ -40,7 +40,8 @@ Create accounts on these services before continuing:
 | ------------------------------------------------ | -------------------------------------------------------------- |
 | [Cloudflare](https://dash.cloudflare.com)        | Control plane hosting (+ web app if using Cloudflare platform) |
 | [Vercel](https://vercel.com) _(optional)_        | Web application hosting (only if `web_platform = "vercel"`)    |
-| [Modal](https://modal.com)                       | Sandbox infrastructure                                         |
+| [Modal](https://modal.com) _(optional)_          | Sandbox infrastructure when `sandbox_provider = "modal"`       |
+| [Daytona](https://app.daytona.io) _(optional)_   | Sandbox infrastructure when `sandbox_provider = "daytona"`     |
 | [GitHub](https://github.com/settings/developers) | OAuth + repository access                                      |
 | [Anthropic](https://console.anthropic.com)       | Claude API                                                     |
 | [Slack](https://api.slack.com/apps) _(optional)_ | Slack bot integration                                          |
@@ -55,7 +56,8 @@ brew install terraform
 # Node.js (22+)
 brew install node@22
 
-# Python 3.12+ and Modal CLI
+# Python 3.12+, uv, and Modal CLI
+brew install python@3.12 uv
 pipx install modal
 modal setup
 
@@ -133,10 +135,29 @@ Create an R2 API Token:
 
 ### Modal
 
+> Only required when `sandbox_provider = "modal"`.
+
 1. Go to [Modal Settings](https://modal.com/settings)
 2. **Create a new API token**: Settings -> API Tokens -> New Token
 3. Note the **Token ID** and **Token Secret**
 4. Note your **Workspace name** (visible in your Modal dashboard URL)
+
+### Daytona
+
+> Only required when `sandbox_provider = "daytona"`.
+
+1. Create a [Daytona](https://app.daytona.io) account and generate an **API key**
+2. Note the **API URL** (e.g., `https://app.daytona.io/api`) and optional **target**
+3. Seed the named base snapshot before pointing traffic at Daytona:
+   ```bash
+   cd packages/daytona-infra
+   pip install daytona   # or: uv pip install daytona
+   python -m src.bootstrap --force
+   ```
+4. Set `sandbox_provider = "daytona"` in `terraform.tfvars`
+5. Set `daytona_api_url`, `daytona_api_key`, and `daytona_base_snapshot` in `terraform.tfvars`
+
+The control plane calls the Daytona REST API directly — no shim service to deploy.
 
 ### Anthropic
 
@@ -225,6 +246,8 @@ Skip this step if you don't need Slack integration.
    - `channels:read`
    - `groups:history`
    - `groups:read`
+   - `im:history`
+   - `im:read`
    - `reactions:write`
 3. Click **"Install to Workspace"**
 4. Note the **Bot Token** (`xoxb-...`)
@@ -444,6 +467,7 @@ The App Home provides a settings interface where users can configure their prefe
    - `app_home_opened` (required for App Home settings)
    - `app_mention`
    - `message.channels` (optional - if you want the bot to see all channel messages)
+   - `message.im` (enables direct message support)
 6. Click **Save Changes**
 
 ### Configure Interactivity
@@ -592,6 +616,7 @@ Go to your fork's Settings → Secrets and variables → Actions, and add:
 | `CLOUDFLARE_API_TOKEN`        | Your Cloudflare API token                                                     |
 | `CLOUDFLARE_ACCOUNT_ID`       | Your Cloudflare account ID                                                    |
 | `CLOUDFLARE_WORKER_SUBDOMAIN` | Your workers.dev subdomain                                                    |
+| `DEPLOYMENT_NAME`             | Your deployment name                                                          |
 | `R2_ACCESS_KEY_ID`            | R2 access key ID                                                              |
 | `R2_SECRET_ACCESS_KEY`        | R2 secret access key                                                          |
 | `WEB_PLATFORM`                | `vercel` or `cloudflare`                                                      |
@@ -602,8 +627,8 @@ Go to your fork's Settings → Secrets and variables → Actions, and add:
 | `MODAL_TOKEN_ID`              | Modal token ID                                                                |
 | `MODAL_TOKEN_SECRET`          | Modal token secret                                                            |
 | `MODAL_WORKSPACE`             | Modal workspace name                                                          |
-| `GH_APP_CLIENT_ID`            | GitHub App client ID                                                          |
-| `GH_APP_CLIENT_SECRET`        | GitHub App client secret                                                      |
+| `GH_OAUTH_CLIENT_ID`          | GitHub App OAuth client ID                                                    |
+| `GH_OAUTH_CLIENT_SECRET`      | GitHub App OAuth client secret                                                |
 | `GH_APP_ID`                   | GitHub App ID                                                                 |
 | `GH_APP_PRIVATE_KEY`          | GitHub App private key (PKCS#8 format)                                        |
 | `GH_APP_INSTALLATION_ID`      | GitHub App installation ID                                                    |
@@ -638,6 +663,13 @@ Then upload all at once (run from your fork's directory, or use
 
 ```bash
 gh secret set -f .secrets
+```
+
+If you bulk upload from a file, set multiline secrets like `GH_APP_PRIVATE_KEY` separately so the
+PEM formatting is preserved:
+
+```bash
+gh secret set GH_APP_PRIVATE_KEY < private-key-pkcs8.pem
 ```
 
 Once configured, the GitHub Actions workflow will:
