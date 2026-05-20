@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { generateAppJwt, postReaction, checkSenderPermission } from "../src/github-auth";
+import { postReaction, checkSenderPermission } from "../src/github-auth";
+import { generateAppJwt } from "@open-inspect/shared";
 
 /** Generate a PKCS#8 PEM RSA key pair for testing. */
 async function generateTestKeyPair(): Promise<{ privateKeyPem: string }> {
