@@ -957,7 +957,7 @@ export class SessionDO extends DurableObject<Env> {
         // Process any pending messages now that sandbox is connected
         this.processMessageQueue();
       } else {
-        const wsId = `ws-${Date.now()}-${Math.random().toString(36).slice(2, 10)}`;
+        const wsId = `ws-${Date.now()}-${crypto.randomUUID()}`;
         this.wsManager.acceptClientSocket(server, wsId);
         this.ctx.waitUntil(this.wsManager.enforceAuthTimeout(server, wsId));
       }
