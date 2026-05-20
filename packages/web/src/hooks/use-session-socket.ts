@@ -7,8 +7,11 @@ import type { Artifact, SandboxEvent } from "@/types/session";
 import type {
   ParticipantPresence,
   SandboxEvent as SharedSandboxEvent,
+  ScreenshotArtifactMetadata,
   ServerMessage,
+  SessionArtifact,
   SessionState as SharedSessionState,
+  VideoArtifactMetadata,
 } from "@open-inspect/shared";
 
 // WebSocket URL (should come from env in production)
@@ -109,18 +112,80 @@ function toUiSandboxEvent(event: SharedSandboxEvent): SandboxEvent {
   };
 }
 
-function toUiArtifact(artifact: {
-  id: string;
-  type: string;
-  url: string;
-  prNumber?: number;
-}): Artifact {
+type PrState = NonNullable<NonNullable<Artifact["metadata"]>["prState"]>;
+const PR_STATES = new Set<string>(["open", "merged", "closed", "draft"]);
+type MediaMimeType = ScreenshotArtifactMetadata["mimeType"] | VideoArtifactMetadata["mimeType"];
+const MEDIA_MIME_TYPES = new Set<MediaMimeType>([
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "video/mp4",
+]);
+
+function isMediaMimeType(value: string): value is MediaMimeType {
+  return MEDIA_MIME_TYPES.has(value as MediaMimeType);
+}
+
+function narrowDimensions(value: unknown): { width: number; height: number } | undefined {
+  if (
+    value &&
+    typeof value === "object" &&
+    typeof (value as { width?: unknown }).width === "number" &&
+    typeof (value as { height?: unknown }).height === "number"
+  ) {
+    return value as { width: number; height: number };
+  }
+  return undefined;
+}
+
+function toUiArtifact(artifact: SessionArtifact): Artifact {
+  const meta = artifact.metadata as Record<string, unknown> | null;
   return {
     id: artifact.id,
     type: artifact.type as Artifact["type"],
     url: artifact.url,
-    createdAt: Date.now(),
-    metadata: artifact.prNumber ? { prNumber: artifact.prNumber } : undefined,
+    createdAt: artifact.createdAt,
+    metadata: meta
+      ? {
+          prNumber: typeof meta.number === "number" ? meta.number : undefined,
+          prState:
+            typeof meta.state === "string" && PR_STATES.has(meta.state)
+              ? (meta.state as PrState)
+              : undefined,
+          mode: meta.mode === "manual_pr" ? "manual_pr" : undefined,
+          createPrUrl: typeof meta.createPrUrl === "string" ? meta.createPrUrl : undefined,
+          head: typeof meta.head === "string" ? meta.head : undefined,
+          base: typeof meta.base === "string" ? meta.base : undefined,
+          provider: typeof meta.provider === "string" ? meta.provider : undefined,
+          filename: typeof meta.filename === "string" ? meta.filename : undefined,
+          objectKey: typeof meta.objectKey === "string" ? meta.objectKey : undefined,
+          mimeType:
+            typeof meta.mimeType === "string" && isMediaMimeType(meta.mimeType)
+              ? meta.mimeType
+              : undefined,
+          sizeBytes: typeof meta.sizeBytes === "number" ? meta.sizeBytes : undefined,
+          viewport: narrowDimensions(meta.viewport),
+          sourceUrl: typeof meta.sourceUrl === "string" ? meta.sourceUrl : undefined,
+          endUrl: typeof meta.endUrl === "string" ? meta.endUrl : undefined,
+          fullPage: typeof meta.fullPage === "boolean" ? meta.fullPage : undefined,
+          annotated: typeof meta.annotated === "boolean" ? meta.annotated : undefined,
+          caption: typeof meta.caption === "string" ? meta.caption : undefined,
+          durationMs: typeof meta.durationMs === "number" ? meta.durationMs : undefined,
+          recordingStartedAt:
+            typeof meta.recordingStartedAt === "number" ? meta.recordingStartedAt : undefined,
+          recordingEndedAt:
+            typeof meta.recordingEndedAt === "number" ? meta.recordingEndedAt : undefined,
+          dimensions: narrowDimensions(meta.dimensions),
+          truncated: typeof meta.truncated === "boolean" ? meta.truncated : undefined,
+          hasAudio: meta.hasAudio === false ? false : undefined,
+          previewStatus:
+            meta.previewStatus === "active" ||
+            meta.previewStatus === "outdated" ||
+            meta.previewStatus === "stopped"
+              ? meta.previewStatus
+              : undefined,
+        }
+      : undefined,
   };
 }
 
@@ -195,6 +260,23 @@ export function useSessionSocket(sessionId: string): UseSessionSocketReturn {
       // Other events (tool_call, user_message, git_sync, etc.) - add normally
       setEvents((prev) => [...prev, event]);
     }
+
+    if (
+      event.type === "step_finish" &&
+      typeof event.cost === "number" &&
+      Number.isFinite(event.cost) &&
+      event.cost > 0
+    ) {
+      const stepCost = event.cost;
+      setSessionState((prev) =>
+        prev
+          ? {
+              ...prev,
+              totalCost: (prev.totalCost ?? 0) + stepCost,
+            }
+          : prev
+      );
+    }
   }, []);
 
   const handleMessage = useCallback(
@@ -203,14 +285,16 @@ export function useSessionSocket(sessionId: string): UseSessionSocketReturn {
         case "subscribed": {
           console.log("WebSocket subscribed to session");
           subscribedRef.current = true;
-          // Clear existing state since we're about to receive fresh history
-          setArtifacts([]);
+          // Replace local artifacts with the subscribed snapshot so reconnects
+          // still clear stale state instead of merging stale client data.
+          setArtifacts(data.artifacts.map(toUiArtifact));
           pendingTextRef.current = null;
           if (data.state) {
             setSessionState({
               ...data.state,
               // Backward-compatible default for older sessions that may omit this.
               isProcessing: data.state.isProcessing ?? false,
+              totalCost: data.state.totalCost ?? 0,
             });
           }
           // Store the current user's participant ID and info for author attribution
@@ -232,7 +316,7 @@ export function useSessionSocket(sessionId: string): UseSessionSocketReturn {
           cursorRef.current = data.replay?.cursor ?? null;
           setReplaying(false);
 
-          if (data.spawnError) {
+          if (data.spawnError && data.state?.sandboxStatus === "failed") {
             console.error("Sandbox spawn error:", data.spawnError);
             setSessionState((prev) => (prev ? { ...prev, sandboxStatus: "failed" } : null));
           }
@@ -346,13 +430,21 @@ export function useSessionSocket(sessionId: string): UseSessionSocketReturn {
 
         case "artifact_created":
           setArtifacts((prev) => {
-            // Avoid duplicates
-            const existing = prev.find((a) => a.id === data.artifact.id);
-            if (existing) {
-              return prev.map((a) => (a.id === data.artifact.id ? toUiArtifact(data.artifact) : a));
+            const nextArtifact = toUiArtifact(data.artifact);
+            const existingIndex = prev.findIndex((artifact) => artifact.id === nextArtifact.id);
+            if (existingIndex === -1) {
+              return [nextArtifact, ...prev];
             }
-            return [...prev, toUiArtifact(data.artifact)];
+
+            return prev.map((artifact, index) =>
+              index === existingIndex ? nextArtifact : artifact
+            );
           });
+          break;
+
+        case "session_branch":
+          // Branch updates apply only to the active session detail view.
+          setSessionState((prev) => (prev ? { ...prev, branchName: data.branchName } : null));
           break;
 
         case "session_title":

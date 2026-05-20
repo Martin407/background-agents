@@ -30,6 +30,7 @@ from ..images.base import base_image
 log = get_logger("manager")
 
 DEFAULT_SANDBOX_TIMEOUT_SECONDS = 7200  # 2 hours
+SNAPSHOT_FILESYSTEM_TIMEOUT_SECONDS = 300
 MAX_TUNNEL_PORTS = 10
 
 
@@ -50,6 +51,9 @@ class SandboxConfig:
     repo_image_id: str | None = None  # Pre-built repo image ID from provider
     repo_image_sha: str | None = None  # Git SHA the repo image was built from
     code_server_enabled: bool = False  # Whether to start code-server in the sandbox
+    agent_slack_notify_enabled: bool = (
+        False  # Whether to install the agent-initiated slack-notify tool
+    )
     settings: dict[str, Any] | None = (
         None  # Sandbox settings (tunnelPorts, etc.) from control plane
     )
@@ -274,6 +278,9 @@ class SandboxManager:
         if terminal_enabled:
             env_vars["TERMINAL_ENABLED"] = "true"
 
+        if config.agent_slack_notify_enabled:
+            env_vars["AGENT_SLACK_NOTIFY_ENABLED"] = "true"
+
         if config.session_config:
             env_vars["SESSION_CONFIG"] = config.session_config.model_dump_json()
 
@@ -352,9 +359,12 @@ class SandboxManager:
 
         Like create_sandbox() but:
         - Sets IMAGE_BUILD_MODE=true (exits after setup, no OpenCode/bridge)
-        - No CONTROL_PLANE_URL, SANDBOX_AUTH_TOKEN, or LLM secrets
+        - No SANDBOX_AUTH_TOKEN, CONTROL_PLANE_URL, or LLM secrets
         - Shorter timeout (30 min vs 2 hours)
         - Always uses base_image (builds start from the universal base)
+
+        Note: MCP servers are not available during image builds (no session config).
+        MCP packages are installed at first use via npx instead.
         """
         BUILD_TIMEOUT_SECONDS = 1800
 
@@ -476,7 +486,9 @@ class SandboxManager:
 
         # Use Modal's native snapshot_filesystem() API
         # This returns an Image directly (not async)
-        image = handle.modal_sandbox.snapshot_filesystem()
+        image = handle.modal_sandbox.snapshot_filesystem(
+            timeout=SNAPSHOT_FILESYSTEM_TIMEOUT_SECONDS
+        )
 
         # The image object_id is the unique identifier for this snapshot
         # Modal automatically stores the image and it persists indefinitely
@@ -529,6 +541,7 @@ class SandboxManager:
         user_env_vars: dict[str, str] | None = None,
         timeout_seconds: int = DEFAULT_SANDBOX_TIMEOUT_SECONDS,
         code_server_enabled: bool = False,
+        agent_slack_notify_enabled: bool = False,
         settings: dict[str, Any] | None = None,
     ) -> SandboxHandle:
         """
@@ -554,17 +567,11 @@ class SandboxManager:
         if isinstance(session_config, dict):
             repo_owner = session_config.get("repo_owner", "")
             repo_name = session_config.get("repo_name", "")
-            provider = session_config.get("provider", "anthropic")
-            model = session_config.get("model", "claude-sonnet-4-6")
-            session_id = session_config.get("session_id", "")
-            branch = session_config.get("branch")
+            session_config_json = json.dumps(session_config)
         else:
             repo_owner = session_config.repo_owner
             repo_name = session_config.repo_name
-            provider = session_config.provider
-            model = session_config.model
-            session_id = session_config.session_id
-            branch = session_config.branch
+            session_config_json = session_config.model_dump_json()
 
         # Use provided sandbox_id or generate one
         if not sandbox_id:
@@ -588,16 +595,7 @@ class SandboxManager:
                 "REPO_OWNER": repo_owner,
                 "REPO_NAME": repo_name,
                 "RESTORED_FROM_SNAPSHOT": "true",  # Signal to skip git clone
-                "SESSION_CONFIG": json.dumps(
-                    {
-                        "session_id": session_id,
-                        "repo_owner": repo_owner,
-                        "repo_name": repo_name,
-                        "provider": provider,
-                        "model": model,
-                        **({"branch": branch} if branch else {}),
-                    }
-                ),
+                "SESSION_CONFIG": session_config_json,
             }
         )
 
@@ -611,6 +609,9 @@ class SandboxManager:
         terminal_enabled = bool((settings or {}).get("terminalEnabled", False))
         if terminal_enabled:
             env_vars["TERMINAL_ENABLED"] = "true"
+
+        if agent_slack_notify_enabled:
+            env_vars["AGENT_SLACK_NOTIFY_ENABLED"] = "true"
 
         # Create the sandbox from the snapshot image
         create_kwargs: dict = {

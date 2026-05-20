@@ -25,7 +25,7 @@ export type SandboxStatus =
 export type GitSyncStatus = "pending" | "in_progress" | "completed" | "failed";
 export type MessageStatus = "pending" | "processing" | "completed" | "failed";
 export type MessageSource = "web" | "slack" | "linear" | "extension" | "github" | "automation";
-export type ArtifactType = "pr" | "screenshot" | "preview" | "branch";
+export type ArtifactType = "pr" | "screenshot" | "video" | "preview" | "branch";
 export type EventType =
   | "heartbeat"
   | "token"
@@ -41,7 +41,13 @@ export type EventType =
   | "push_error"
   | "user_message";
 export type ParticipantRole = "owner" | "member";
-export type SpawnSource = "user" | "agent" | "automation";
+export type SpawnSource =
+  | "user"
+  | "agent"
+  | "automation"
+  | "github-bot"
+  | "linear-bot"
+  | "slack-bot";
 export type ConfidenceLevel = "high" | "medium" | "low";
 
 // Participant in a session
@@ -122,6 +128,60 @@ export interface ManualPullRequestArtifactMetadata {
   base: string;
   createPrUrl: string;
   provider?: string;
+}
+
+/** Metadata stored on screenshot artifacts. */
+export interface ScreenshotArtifactMetadata {
+  /** R2 object key */
+  objectKey: string;
+  /** MIME type: image/png, image/jpeg, image/webp */
+  mimeType: "image/png" | "image/jpeg" | "image/webp";
+  /** File size in bytes */
+  sizeBytes: number;
+  /** Viewport dimensions at capture time */
+  viewport?: { width: number; height: number };
+  /** URL that was screenshotted */
+  sourceUrl?: string;
+  /** Whether this is a full-page screenshot */
+  fullPage?: boolean;
+  /** Whether element annotations are overlaid */
+  annotated?: boolean;
+  /** Caption or description provided by the agent */
+  caption?: string;
+}
+
+/** Metadata stored on video recording artifacts. */
+export interface VideoArtifactMetadata {
+  /** R2 object key */
+  objectKey: string;
+  /** MIME type for saved recordings. */
+  mimeType: "video/mp4";
+  /** File size in bytes */
+  sizeBytes: number;
+  /** Agent-provided title or description of the validation recording */
+  caption: string;
+  /** Recording duration in milliseconds */
+  durationMs: number;
+  /** Artifact creation time as epoch milliseconds */
+  createdAt: number;
+  /** Recording start time as epoch milliseconds */
+  recordingStartedAt: number;
+  /** Recording end time as epoch milliseconds */
+  recordingEndedAt: number;
+  /** Captured viewport dimensions */
+  dimensions: { width: number; height: number };
+  /** Whether recording stopped at the maximum duration */
+  truncated: boolean;
+  /** Recordings must not include audio */
+  hasAudio?: false;
+  /** Captured surface for v1 */
+  captureSurface?: "browser";
+  /** Artifact source */
+  source?: "agent";
+  /** URL at recording start */
+  sourceUrl?: string;
+  /** URL when recording stopped */
+  endUrl?: string;
 }
 
 // Pull request info
@@ -209,8 +269,10 @@ export type SandboxEvent =
   | {
       type: "artifact";
       artifactType: string;
+      artifactId?: string;
       url: string;
       metadata?: Record<string, unknown>;
+      messageId?: string;
       sandboxId: string;
       timestamp: number;
     }
@@ -261,6 +323,7 @@ export type ServerMessage =
       type: "subscribed";
       sessionId: string;
       state: SessionState;
+      artifacts: SessionArtifact[];
       participantId: string;
       participant?: { participantId: string; name: string; avatar?: string };
       replay?: {
@@ -280,10 +343,8 @@ export type ServerMessage =
   | { type: "sandbox_status"; status: SandboxStatus }
   | { type: "sandbox_ready" }
   | { type: "sandbox_error"; error: string }
-  | {
-      type: "artifact_created";
-      artifact: { id: string; type: string; url: string; prNumber?: number };
-    }
+  | { type: "artifact_created"; artifact: SessionArtifact }
+  | { type: "session_branch"; branchName: string }
   | { type: "snapshot_saved"; imageId: string; reason: string }
   | { type: "sandbox_restored"; message: string }
   | { type: "sandbox_warning"; message: string }
@@ -323,6 +384,7 @@ export interface SessionState {
   reasoningEffort?: string;
   isProcessing?: boolean;
   parentSessionId?: string | null;
+  totalCost?: number;
   codeServerUrl?: string | null;
   codeServerPassword?: string | null;
   tunnelUrls?: Record<string, string> | null;
@@ -440,6 +502,7 @@ export interface AgentResponse {
   toolCalls: ToolCallSummary[];
   artifacts: ArtifactInfo[];
   success: boolean;
+  error?: string;
 }
 
 export interface UserPreferences {
@@ -563,6 +626,59 @@ export interface ChildSessionDetail {
   sandbox: { status: SandboxStatus } | null;
   artifacts: Array<{ type: string; url: string; metadata: unknown }>;
   recentEvents: Array<{ type: string; data: unknown; createdAt: number }>;
+}
+
+// ─── Analytics ───────────────────────────────────────────────────────────────
+
+export const ANALYTICS_DAYS = [7, 14, 30, 90] as const;
+export type AnalyticsDays = (typeof ANALYTICS_DAYS)[number];
+
+export const ANALYTICS_BREAKDOWN_BY = ["user", "repo"] as const;
+export type AnalyticsBreakdownBy = (typeof ANALYTICS_BREAKDOWN_BY)[number];
+
+export interface AnalyticsStatusBreakdown {
+  created: number;
+  active: number;
+  completed: number;
+  failed: number;
+  archived: number;
+  cancelled: number;
+}
+
+export interface AnalyticsSummaryResponse {
+  totalSessions: number;
+  activeUsers: number;
+  totalCost: number;
+  avgCost: number;
+  totalPrs: number;
+  statusBreakdown: AnalyticsStatusBreakdown;
+}
+
+export interface AnalyticsTimeseriesPoint {
+  date: string;
+  groups: Record<string, number>;
+}
+
+export interface AnalyticsTimeseriesResponse {
+  series: AnalyticsTimeseriesPoint[];
+}
+
+export interface AnalyticsBreakdownEntry {
+  key: string;
+  displayName?: string;
+  sessions: number;
+  completed: number;
+  failed: number;
+  cancelled: number;
+  cost: number;
+  prs: number;
+  messageCount: number;
+  avgDuration: number;
+  lastActive: number;
+}
+
+export interface AnalyticsBreakdownResponse {
+  entries: AnalyticsBreakdownEntry[];
 }
 
 // ─── Automation Engine ────────────────────────────────────────────────────────

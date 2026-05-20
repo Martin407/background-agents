@@ -21,6 +21,7 @@ import type { SessionRepository } from "./repository";
 import type { SessionWebSocketManager } from "./websocket-manager";
 import type { ParticipantService } from "./participant-service";
 import type { CallbackNotificationService } from "./callback-notification-service";
+import type { EnqueuePromptRequest } from "./services/message.service";
 import { getAvatarUrl } from "./participant-service";
 
 interface PromptMessageData {
@@ -232,10 +233,12 @@ export class SessionMessageQueue {
         message_id: processingMessage.id,
       });
 
+      const stopError = "Execution was stopped";
       const syntheticExecutionComplete: Extract<SandboxEvent, { type: "execution_complete" }> = {
         type: "execution_complete",
         messageId: processingMessage.id,
         success: false,
+        error: stopError,
         sandboxId: "",
         timestamp: now / 1000,
       };
@@ -251,7 +254,7 @@ export class SessionMessageQueue {
       });
 
       this.deps.ctx.waitUntil(
-        this.deps.callbackService.notifyComplete(processingMessage.id, false)
+        this.deps.callbackService.notifyComplete(processingMessage.id, false, stopError)
       );
 
       if (!options.suppressStatusReconcile) {
@@ -281,17 +284,21 @@ export class SessionMessageQueue {
 
     this.deps.repository.updateMessageCompletion(processingMessage.id, "failed", now);
 
+    const stuckError = "Execution timed out (stuck processing)";
     const syntheticEvent: Extract<SandboxEvent, { type: "execution_complete" }> = {
       type: "execution_complete",
       messageId: processingMessage.id,
       success: false,
+      error: stuckError,
       sandboxId: "",
       timestamp: now / 1000,
     };
     this.deps.repository.upsertExecutionCompleteEvent(processingMessage.id, syntheticEvent, now);
     this.deps.broadcast({ type: "sandbox_event", event: syntheticEvent });
     this.deps.broadcast({ type: "processing_status", isProcessing: false });
-    this.deps.ctx.waitUntil(this.deps.callbackService.notifyComplete(processingMessage.id, false));
+    this.deps.ctx.waitUntil(
+      this.deps.callbackService.notifyComplete(processingMessage.id, false, stuckError)
+    );
     await this.deps.reconcileSessionStatusAfterExecution(false);
   }
 
@@ -322,18 +329,35 @@ export class SessionMessageQueue {
     this.deps.broadcast({ type: "sandbox_event", event: userMessageEvent });
   }
 
-  async enqueuePromptFromApi(data: {
-    content: string;
-    authorId: string;
-    source: string;
-    model?: string;
-    reasoningEffort?: string;
-    attachments?: Array<{ type: string; name: string; url?: string }>;
-    callbackContext?: Record<string, unknown>;
-  }): Promise<{ messageId: string; status: "queued" }> {
+  async enqueuePromptFromApi(
+    data: EnqueuePromptRequest
+  ): Promise<{ messageId: string; status: "queued" }> {
     let participant = this.deps.participantService.getByUserId(data.authorId);
     if (!participant) {
-      participant = this.deps.participantService.create(data.authorId, data.authorId);
+      participant = this.deps.participantService.create(
+        data.authorId,
+        data.authorDisplayName || data.authorId
+      );
+    }
+
+    // COALESCE update: populate identity fields on non-owner participants
+    const hasEnrichment =
+      data.authorDisplayName ||
+      data.authorEmail ||
+      data.authorLogin ||
+      data.scmUserId ||
+      data.scmAccessTokenEncrypted;
+    if (hasEnrichment) {
+      this.deps.repository.updateParticipantCoalesce(participant.id, {
+        scmName: data.authorDisplayName ?? null,
+        scmEmail: data.authorEmail ?? null,
+        scmLogin: data.authorLogin ?? null,
+        scmUserId: data.scmUserId ?? null,
+        scmAccessTokenEncrypted: data.scmAccessTokenEncrypted ?? null,
+        scmRefreshTokenEncrypted: data.scmRefreshTokenEncrypted ?? null,
+        scmTokenExpiresAt: data.scmTokenExpiresAt ?? null,
+      });
+      participant = this.deps.repository.getParticipantById(participant.id) ?? participant;
     }
 
     const messageId = generateId();

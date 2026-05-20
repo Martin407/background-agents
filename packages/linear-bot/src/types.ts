@@ -17,6 +17,7 @@ export interface Env {
   CONTROL_PLANE_URL: string;
   WEB_APP_URL: string;
   DEFAULT_MODEL: string;
+  APP_NAME?: string;
 
   // OAuth app credentials
   LINEAR_CLIENT_ID: string;
@@ -119,6 +120,7 @@ export interface CompletionCallback {
   sessionId: string;
   messageId: string;
   success: boolean;
+  error?: string;
   timestamp: number;
   signature: string;
   context: LinearCallbackContext;
@@ -196,6 +198,7 @@ export interface AgentSessionWebhook {
   type: string;
   action: string;
   organizationId: string;
+  webhookId: string;
   appUserId?: string;
   agentSession: {
     id: string;
@@ -203,5 +206,10 @@ export interface AgentSessionWebhook {
     comment?: { body: string };
     promptContext?: string;
   };
-  agentActivity?: { body?: string };
+  agentActivity?: {
+    content?: {
+      type?: string;
+      body?: string;
+    };
+  };
 }

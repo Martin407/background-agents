@@ -9,7 +9,11 @@
  * 3. Token valid for 1 hour
  */
 
-import type { InstallationRepository } from "@open-inspect/shared";
+import {
+  DEFAULT_APP_NAME,
+  type CacheStore,
+  type InstallationRepository,
+} from "@open-inspect/shared";
 
 /** Timeout for individual GitHub API requests (ms). */
 export const GITHUB_FETCH_TIMEOUT_MS = 60_000;
@@ -26,7 +30,14 @@ export const INSTALLATION_TOKEN_CACHE_MAX_TTL_SECONDS = 3600;
 const INSTALLATION_TOKEN_CACHE_KEY_PREFIX = "github:installation-token:v1";
 
 interface InstallationTokenCacheBindings {
-  REPOS_CACHE?: KVNamespace;
+  cacheStore?: CacheStore;
+  /** User-Agent header sent on outbound GitHub API requests. */
+  userAgent?: string;
+}
+
+function resolveUserAgent(env: InstallationTokenCacheBindings | undefined): string {
+  const value = env?.userAgent?.trim();
+  return value && value.length > 0 ? value : DEFAULT_APP_NAME;
 }
 
 interface CachedInstallationToken {
@@ -215,7 +226,8 @@ export async function generateAppJwt(appId: string, privateKey: string): Promise
  */
 async function getInstallationTokenWithMetadata(
   jwt: string,
-  installationId: string
+  installationId: string,
+  userAgent: string
 ): Promise<InstallationTokenResponse> {
   const url = `https://api.github.com/app/installations/${installationId}/access_tokens`;
 
@@ -225,7 +237,7 @@ async function getInstallationTokenWithMetadata(
       Authorization: `Bearer ${jwt}`,
       Accept: "application/vnd.github+json",
       "X-GitHub-Api-Version": "2022-11-28",
-      "User-Agent": "Open-Inspect",
+      "User-Agent": userAgent,
     },
   });
 
@@ -249,28 +261,28 @@ function isTokenUsable(cached: CachedInstallationToken, nowEpochMs = Date.now())
   return nowEpochMs < cached.expiresAtEpochMs - INSTALLATION_TOKEN_MIN_REMAINING_MS;
 }
 
-async function readInstallationTokenFromKv(
+async function readInstallationTokenFromCache(
   env: InstallationTokenCacheBindings | undefined,
   cacheKey: string
 ): Promise<CachedInstallationToken | null> {
-  if (!env?.REPOS_CACHE) {
+  if (!env?.cacheStore) {
     return null;
   }
 
   try {
-    const cached = await env.REPOS_CACHE.get<CachedInstallationToken>(cacheKey, "json");
+    const cached = await env.cacheStore.get<CachedInstallationToken>(cacheKey, "json");
     return cached ?? null;
   } catch {
     return null;
   }
 }
 
-async function writeInstallationTokenToKv(
+async function writeInstallationTokenToCache(
   env: InstallationTokenCacheBindings | undefined,
   cacheKey: string,
   cached: CachedInstallationToken
 ): Promise<void> {
-  if (!env?.REPOS_CACHE) {
+  if (!env?.cacheStore) {
     return;
   }
 
@@ -287,7 +299,7 @@ async function writeInstallationTokenToKv(
   );
 
   try {
-    await env.REPOS_CACHE.put(cacheKey, JSON.stringify(cached), { expirationTtl: ttlSeconds });
+    await env.cacheStore.put(cacheKey, JSON.stringify(cached), { expirationTtl: ttlSeconds });
   } catch {
     // Cache failures are non-fatal.
   }
@@ -300,12 +312,12 @@ async function invalidateInstallationTokenCache(
   installationTokenMemoryCache.delete(cacheKey);
   installationTokenRefreshInFlight.delete(cacheKey);
 
-  if (!env?.REPOS_CACHE) {
+  if (!env?.cacheStore) {
     return;
   }
 
   try {
-    await env.REPOS_CACHE.delete(cacheKey);
+    await env.cacheStore.delete(cacheKey);
   } catch {
     // Cache invalidation failures are non-fatal.
   }
@@ -318,7 +330,11 @@ async function refreshInstallationToken(
 ): Promise<CachedInstallationToken> {
   const nowEpochMs = Date.now();
   const jwt = await generateAppJwt(config.appId, config.privateKey);
-  const tokenData = await getInstallationTokenWithMetadata(jwt, config.installationId);
+  const tokenData = await getInstallationTokenWithMetadata(
+    jwt,
+    config.installationId,
+    resolveUserAgent(env)
+  );
   const parsedExpiresAtEpochMs = Date.parse(tokenData.expires_at);
   const cached: CachedInstallationToken = {
     token: tokenData.token,
@@ -329,7 +345,7 @@ async function refreshInstallationToken(
   };
 
   installationTokenMemoryCache.set(cacheKey, cached);
-  await writeInstallationTokenToKv(env, cacheKey, cached);
+  await writeInstallationTokenToCache(env, cacheKey, cached);
   return cached;
 }
 
@@ -350,10 +366,10 @@ export async function getCachedInstallationToken(
       return memoryCached.token;
     }
 
-    const kvCached = await readInstallationTokenFromKv(env, cacheKey);
-    if (kvCached && isTokenUsable(kvCached)) {
-      installationTokenMemoryCache.set(cacheKey, kvCached);
-      return kvCached.token;
+    const persistentCached = await readInstallationTokenFromCache(env, cacheKey);
+    if (persistentCached && isTokenUsable(persistentCached)) {
+      installationTokenMemoryCache.set(cacheKey, persistentCached);
+      return persistentCached.token;
     }
 
     const inFlight = installationTokenRefreshInFlight.get(cacheKey);
@@ -418,7 +434,7 @@ export async function listInstallationRepositories(
     Authorization: `Bearer ${token}`,
     Accept: "application/vnd.github+json",
     "X-GitHub-Api-Version": "2022-11-28",
-    "User-Agent": "Open-Inspect",
+    "User-Agent": resolveUserAgent(env),
   };
 
   const fetchPage = async (
@@ -522,7 +538,7 @@ export async function getInstallationRepository(
         Authorization: `Bearer ${token}`,
         Accept: "application/vnd.github+json",
         "X-GitHub-Api-Version": "2022-11-28",
-        "User-Agent": "Open-Inspect",
+        "User-Agent": resolveUserAgent(env),
       },
     });
 
@@ -586,7 +602,7 @@ export async function listRepositoryBranches(
           Authorization: `Bearer ${token}`,
           Accept: "application/vnd.github+json",
           "X-GitHub-Api-Version": "2022-11-28",
-          "User-Agent": "Open-Inspect",
+          "User-Agent": resolveUserAgent(env),
         },
       }
     );

@@ -46,11 +46,6 @@ Base image definition with:
 - **bridge.py**: WebSocket bridge to control plane
 - **types.py**: Event and configuration types
 
-### Registry (`src/registry/`)
-
-- **models.py**: Repository and snapshot data models
-- **store.py**: Persistent metadata storage
-
 ### Auth (`src/auth/`)
 
 - **github_app.py**: GitHub App token generation for repo access
@@ -59,7 +54,6 @@ Base image definition with:
 ### API (`src/`)
 
 - **web_api.py**: HTTP endpoints called by the control plane
-- **functions.py**: Modal function definitions (used internally)
 
 ### Scheduler (`src/scheduler/`)
 
@@ -134,7 +128,6 @@ Endpoint URLs follow the pattern: `https://{workspace}--open-inspect-{endpoint}.
 | `api-health` | GET | No | Health check |
 | `api-create-sandbox` | POST | Yes | Create a new sandbox |
 | `api-warm-sandbox` | POST | Yes | Pre-warm a sandbox |
-| `api-snapshot` | GET | Yes | Get latest snapshot for a repo |
 | `api-snapshot-sandbox` | POST | Yes | Take filesystem snapshot |
 | `api-restore-sandbox` | POST | Yes | Restore sandbox from snapshot |
 
@@ -200,17 +193,6 @@ pytest tests/
 mypy src/
 ```
 
-### CLI Tools
+### Health Check
 
-Development utilities available via Modal CLI:
-
-```bash
-# Check service health
-modal run src/cli.py::check_health
-
-# List registered repositories
-modal run src/cli.py::list_repos
-
-# Register a repository (for testing)
-modal run src/cli.py::register_repo --owner your-org --name your-repo
-```
+The health endpoint is available at `GET /api_health` (no authentication required).

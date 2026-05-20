@@ -1,3 +1,4 @@
+import { buildInternalAuthHeaders, resolveAppName } from "@open-inspect/shared";
 import type {
   Env,
   PullRequestOpenedPayload,
@@ -8,7 +9,6 @@ import type {
 import type { Logger } from "./logger";
 import { generateInstallationToken, postReaction, checkSenderPermission } from "./github-auth";
 import { buildCodeReviewPrompt, buildCommentActionPrompt } from "./prompts";
-import { buildInternalAuthHeaders } from "./utils/internal";
 import { getGitHubConfig, type ResolvedGitHubConfig } from "./utils/integration-config";
 
 export type HandlerResult =
@@ -31,6 +31,9 @@ async function createSession(
     title: string;
     model: string;
     reasoningEffort?: string | null;
+    scmLogin: string;
+    scmUserId: string;
+    scmAvatarUrl: string;
   }
 ): Promise<string> {
   const body: Record<string, unknown> = {
@@ -38,6 +41,10 @@ async function createSession(
     repoName: params.repoName,
     title: params.title,
     model: params.model,
+    scmLogin: params.scmLogin,
+    scmUserId: params.scmUserId,
+    scmAvatarUrl: params.scmAvatarUrl,
+    spawnSource: "github-bot",
   };
   if (params.reasoningEffort) {
     body.reasoningEffort = params.reasoningEffort;
@@ -83,9 +90,10 @@ function fireAndForgetReaction(
   log: Logger,
   token: string,
   url: string,
+  userAgent: string,
   meta: Record<string, unknown>
 ): void {
-  postReaction(token, url, "eyes").then(
+  postReaction(token, url, "eyes", userAgent).then(
     (ok) => {
       if (ok) log.debug("acknowledgment.posted", meta);
       else log.warn("acknowledgment.failed", meta);
@@ -118,11 +126,13 @@ async function resolveCallerGating(
     }
   }
 
+  const userAgent = resolveAppName(env);
   const [ghToken, headers] = await Promise.all([
     generateInstallationToken({
       appId: env.GITHUB_APP_ID,
       privateKey: env.GITHUB_APP_PRIVATE_KEY,
       installationId: env.GITHUB_APP_INSTALLATION_ID,
+      userAgent,
     }),
     getAuthHeaders(env, traceId),
   ]);
@@ -132,7 +142,8 @@ async function resolveCallerGating(
       ghToken,
       owner,
       repoName,
-      senderLogin
+      senderLogin,
+      userAgent
     );
     if (!hasPermission) {
       const reason = error ? "permission_check_failed" : "sender_insufficient_permission";
@@ -195,6 +206,7 @@ export async function handleReviewRequested(
     log,
     ghToken,
     `https://api.github.com/repos/${owner}/${repoName}/issues/${pr.number}/reactions`,
+    resolveAppName(env),
     meta
   );
 
@@ -204,6 +216,9 @@ export async function handleReviewRequested(
     title: `GitHub: Review PR #${pr.number}`,
     model: config.model,
     reasoningEffort: config.reasoningEffort,
+    scmLogin: sender.login,
+    scmUserId: String(sender.id),
+    scmAvatarUrl: sender.avatar_url,
   });
   log.info("session.created", { ...meta, session_id: sessionId, action: "review" });
 
@@ -222,7 +237,7 @@ export async function handleReviewRequested(
 
   const messageId = await sendPrompt(env.CONTROL_PLANE, headers, sessionId, {
     content: prompt,
-    authorId: `github:${payload.sender.login}`,
+    authorId: `github:${payload.sender.id}`,
   });
   log.info("prompt.sent", {
     ...meta,
@@ -291,6 +306,7 @@ export async function handlePullRequestOpened(
     log,
     ghToken,
     `https://api.github.com/repos/${owner}/${repoName}/issues/${pr.number}/reactions`,
+    resolveAppName(env),
     meta
   );
 
@@ -300,6 +316,9 @@ export async function handlePullRequestOpened(
     title: `GitHub: Review PR #${pr.number}`,
     model: config.model,
     reasoningEffort: config.reasoningEffort,
+    scmLogin: sender.login,
+    scmUserId: String(sender.id),
+    scmAvatarUrl: sender.avatar_url,
   });
   log.info("session.created", { ...meta, session_id: sessionId, action: "auto_review" });
 
@@ -318,7 +337,7 @@ export async function handlePullRequestOpened(
 
   const messageId = await sendPrompt(env.CONTROL_PLANE, headers, sessionId, {
     content: prompt,
-    authorId: `github:${sender.login}`,
+    authorId: `github:${sender.id}`,
   });
   log.info("prompt.sent", {
     ...meta,
@@ -393,6 +412,7 @@ export async function handleIssueComment(
     log,
     ghToken,
     `https://api.github.com/repos/${owner}/${repoName}/issues/comments/${comment.id}/reactions`,
+    resolveAppName(env),
     meta
   );
 
@@ -402,6 +422,9 @@ export async function handleIssueComment(
     title: `GitHub: PR #${issue.number} comment`,
     model: config.model,
     reasoningEffort: config.reasoningEffort,
+    scmLogin: sender.login,
+    scmUserId: String(sender.id),
+    scmAvatarUrl: sender.avatar_url,
   });
   log.info("session.created", { ...meta, session_id: sessionId, action: "comment" });
 
@@ -418,7 +441,7 @@ export async function handleIssueComment(
 
   const messageId = await sendPrompt(env.CONTROL_PLANE, headers, sessionId, {
     content: prompt,
-    authorId: `github:${sender.login}`,
+    authorId: `github:${sender.id}`,
   });
   log.info("prompt.sent", {
     ...meta,
@@ -488,6 +511,7 @@ export async function handleReviewComment(
     log,
     ghToken,
     `https://api.github.com/repos/${owner}/${repoName}/pulls/comments/${comment.id}/reactions`,
+    resolveAppName(env),
     meta
   );
 
@@ -497,6 +521,9 @@ export async function handleReviewComment(
     title: `GitHub: PR #${pr.number} review comment`,
     model: config.model,
     reasoningEffort: config.reasoningEffort,
+    scmLogin: sender.login,
+    scmUserId: String(sender.id),
+    scmAvatarUrl: sender.avatar_url,
   });
   log.info("session.created", { ...meta, session_id: sessionId, action: "review_comment" });
 
@@ -518,7 +545,7 @@ export async function handleReviewComment(
 
   const messageId = await sendPrompt(env.CONTROL_PLANE, headers, sessionId, {
     content: prompt,
-    authorId: `github:${sender.login}`,
+    authorId: `github:${sender.id}`,
   });
   log.info("prompt.sent", {
     ...meta,

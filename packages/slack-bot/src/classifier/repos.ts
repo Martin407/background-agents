@@ -8,7 +8,7 @@
 
 import type { Env, RepoConfig, ControlPlaneRepo, ControlPlaneReposResponse } from "../types";
 import { normalizeRepoId } from "../utils/repo";
-import { buildInternalAuthHeaders } from "../utils/internal";
+import { buildInternalAuthHeaders, createKvCacheStore } from "@open-inspect/shared";
 import { createLogger } from "../logger";
 
 const log = createLogger("repos");
@@ -120,7 +120,7 @@ export async function getAvailableRepos(env: Env, traceId?: string): Promise<Rep
 
     // Also store in KV for persistence across worker restarts
     try {
-      await env.SLACK_KV.put("repos:cache", JSON.stringify(repos), {
+      await createKvCacheStore(env.SLACK_KV).put("repos:cache", JSON.stringify(repos), {
         expirationTtl: 300, // 5 minutes
       });
     } catch (e) {
@@ -155,7 +155,7 @@ export async function getAvailableRepos(env: Env, traceId?: string): Promise<Rep
  */
 async function getFromCacheOrFallback(env: Env): Promise<RepoConfig[]> {
   try {
-    const cached = await env.SLACK_KV.get("repos:cache", "json");
+    const cached = await createKvCacheStore(env.SLACK_KV).get("repos:cache", "json");
     if (cached && Array.isArray(cached)) {
       log.info("control_plane.fetch_repos", { source: "kv_cache" });
       return cached as RepoConfig[];

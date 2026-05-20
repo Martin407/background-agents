@@ -7,6 +7,7 @@
 
 import type { SandboxSettings } from "@open-inspect/shared";
 import type { CorrelationContext } from "../logger";
+import type { McpServerConfig } from "@open-inspect/shared";
 
 /** Default sandbox lifetime in seconds (2 hours). */
 export const DEFAULT_SANDBOX_TIMEOUT_SECONDS = 7200;
@@ -64,6 +65,14 @@ export interface CreateSandboxConfig {
   branch?: string;
   /** Whether to enable code-server (browser-based editor) in the sandbox */
   codeServerEnabled?: boolean;
+  /**
+   * Whether to install the agent-initiated slack-notify tool. Fixed for the
+   * lifetime of the sandbox; per-call authorization is re-evaluated by the
+   * control-plane endpoint.
+   */
+  agentSlackNotifyEnabled?: boolean;
+  /** MCP servers to inject into the agent session */
+  mcpServers?: McpServerConfig[];
   /** Sandbox settings (tunnel ports, etc.) resolved from integration settings */
   sandboxSettings?: SandboxSettings;
 }
@@ -118,10 +127,14 @@ export interface RestoreConfig {
   timeoutSeconds?: number;
   /** Git branch to work on (defaults to repo's default branch) */
   branch?: string;
+  /** MCP servers to inject into the sandbox */
+  mcpServers?: McpServerConfig[];
   /** Correlation context for downstream tracing */
   correlation?: CorrelationContext;
   /** Whether to enable code-server (browser-based editor) in the sandbox */
   codeServerEnabled?: boolean;
+  /** Resolved fresh on each restore — see CreateSandboxConfig. */
+  agentSlackNotifyEnabled?: boolean;
   /** Sandbox settings (tunnel ports, etc.) resolved from integration settings */
   sandboxSettings?: SandboxSettings;
 }

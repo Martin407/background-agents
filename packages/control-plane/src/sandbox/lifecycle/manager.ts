@@ -13,6 +13,7 @@
 import { MAX_TUNNEL_PORTS, type SandboxSettings } from "@open-inspect/shared";
 import type { SandboxStatus } from "../../types";
 import type { SandboxRow, SessionRow } from "../../session/types";
+import type { McpServerConfig } from "@open-inspect/shared";
 import { SandboxProviderError, type SandboxProvider, type CreateSandboxConfig } from "../provider";
 import {
   evaluateCircuitBreaker,
@@ -161,6 +162,10 @@ export interface SandboxLifecycleConfig {
   model: string;
   /** Session ID for log correlation. Optional — logs will omit sessionId if not provided. */
   sessionId?: string;
+  /** MCP server lookup for injecting servers into sandboxes. */
+  mcpServerLookup?: McpServerLookup;
+  /** Resolves the spawn-time agent-slack-notify gate. */
+  slackAgentNotifyLookup?: SlackAgentNotifyLookup;
 }
 
 /**
@@ -177,6 +182,16 @@ export const DEFAULT_LIFECYCLE_CONFIG: Omit<SandboxLifecycleConfig, "controlPlan
 /** Child (agent-spawned) sessions get a shorter sandbox timeout. */
 const CHILD_SANDBOX_TIMEOUT_SECONDS = 3600; // 1 hour (vs default 2 hours)
 
+// ==================== MCP Server Lookup ====================
+
+/**
+ * Lookup interface for MCP servers applicable to a session.
+ * Keeps the lifecycle manager free of direct D1Database dependencies.
+ */
+export interface McpServerLookup {
+  getDecryptedForSession(repoOwner: string, repoName: string): Promise<McpServerConfig[]>;
+}
+
 // ==================== Repo Image Lookup ====================
 
 /**
@@ -189,6 +204,16 @@ export interface RepoImageLookup {
     repoName: string,
     baseBranch?: string
   ): Promise<{ provider_image_id: string; base_sha: string } | null>;
+}
+
+// ==================== Slack Agent-Notify Lookup ====================
+
+/**
+ * Resolves the spawn-time agent-slack-notify gate for a given repo.
+ * False (or throwing) means do not install the tool in this sandbox.
+ */
+export interface SlackAgentNotifyLookup {
+  isEnabledForRepo(repoOwner: string, repoName: string): Promise<boolean>;
 }
 
 // ==================== Callbacks ====================
@@ -395,7 +420,10 @@ export class SandboxLifecycleManager {
       const timeoutSeconds =
         session.spawn_source === "agent" ? CHILD_SANDBOX_TIMEOUT_SECONDS : undefined;
 
+      const mcpServers = await this.loadMcpServers(session);
+
       const codeServerEnabled = session.code_server_enabled === 1;
+      const agentSlackNotifyEnabled = await this.resolveAgentSlackNotifyEnabled(session);
       const sandboxSettings = this.parseSandboxSettings(session);
       const createConfig: CreateSandboxConfig = {
         sessionId,
@@ -412,6 +440,8 @@ export class SandboxLifecycleManager {
         timeoutSeconds,
         branch: session.base_branch,
         codeServerEnabled,
+        agentSlackNotifyEnabled,
+        mcpServers,
         sandboxSettings,
       };
 
@@ -483,6 +513,48 @@ export class SandboxLifecycleManager {
     }
   }
 
+  private async resolveAgentSlackNotifyEnabled(session: SessionRow): Promise<boolean> {
+    if (!this.config.slackAgentNotifyLookup) return false;
+    try {
+      return await this.config.slackAgentNotifyLookup.isEnabledForRepo(
+        session.repo_owner,
+        session.repo_name
+      );
+    } catch (err) {
+      this.log.warn("Failed to resolve agent slack-notify gate; treating as disabled", {
+        event: "slack_notify.gate_resolve_failed",
+        error: err instanceof Error ? err.message : String(err),
+      });
+      return false;
+    }
+  }
+
+  /**
+   * Load MCP servers applicable to the current session's repository.
+   * Returns undefined if none are found or DB is not configured.
+   */
+  private async loadMcpServers(session: SessionRow): Promise<McpServerConfig[] | undefined> {
+    try {
+      if (!this.config.mcpServerLookup) return undefined;
+      const servers = await this.config.mcpServerLookup.getDecryptedForSession(
+        session.repo_owner,
+        session.repo_name
+      );
+      this.log.info("MCP servers loaded", {
+        event: "mcp.loaded",
+        count: servers?.length ?? 0,
+        names: servers?.map((s) => s.name) ?? [],
+      });
+      return servers?.length ? servers : undefined;
+    } catch (err) {
+      this.log.warn("Failed to load MCP servers", {
+        event: "mcp.load_failed",
+        error: String(err),
+      });
+      return undefined;
+    }
+  }
+
   /**
    * Restore a sandbox from a filesystem snapshot.
    */
@@ -534,6 +606,8 @@ export class SandboxLifecycleManager {
         session.spawn_source === "agent" ? CHILD_SANDBOX_TIMEOUT_SECONDS : undefined;
 
       const codeServerEnabled = session.code_server_enabled === 1;
+      const agentSlackNotifyEnabled = await this.resolveAgentSlackNotifyEnabled(session);
+      const mcpServers = await this.loadMcpServers(session);
       const sandboxSettings = this.parseSandboxSettings(session);
       const result = await this.provider.restoreFromSnapshot({
         snapshotImageId,
@@ -549,6 +623,8 @@ export class SandboxLifecycleManager {
         timeoutSeconds,
         branch: session.base_branch,
         codeServerEnabled,
+        agentSlackNotifyEnabled,
+        mcpServers,
         sandboxSettings,
       });
 
@@ -1160,11 +1236,12 @@ export class SandboxLifecycleManager {
 
   /**
    * Notify the manager that a sandbox has connected.
-   * Resets the in-memory spawning flag to allow future spawns.
+   * Resets the in-memory spawning flag and clears any stale spawn error.
    *
    * Called by SessionDO when sandbox WebSocket connects successfully.
    */
   onSandboxConnected(): void {
     this.isSpawningSandbox = false;
+    this.storage.setLastSpawnError(null, null);
   }
 }

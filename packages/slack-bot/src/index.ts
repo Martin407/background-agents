@@ -6,6 +6,7 @@
  */
 
 import { Hono } from "hono";
+import { resolveAppName } from "@open-inspect/shared";
 import type {
   Env,
   RepoConfig,
@@ -22,15 +23,17 @@ import {
   addReaction,
   getChannelInfo,
   getThreadMessages,
+  getUserInfo,
   publishView,
   openView,
-} from "./utils/slack-client";
-import { resolveUserNames } from "./utils/resolve-users";
+} from "@open-inspect/shared";
+import { resolveUserNames } from "@open-inspect/shared";
 import { createClassifier } from "./classifier";
 import { getAvailableRepos } from "./classifier/repos";
 import { callbacksRouter } from "./callbacks";
-import { buildInternalAuthHeaders } from "./utils/internal";
+import { buildInternalAuthHeaders } from "@open-inspect/shared";
 import { createLogger } from "./logger";
+import { createKvCacheStore } from "@open-inspect/shared";
 import {
   BRANCH_MODAL_CALLBACK_ID,
   REPO_BRANCH_MODAL_CALLBACK_ID,
@@ -58,10 +61,16 @@ import {
   getDefaultReasoningEffort,
   isValidReasoningEffort,
 } from "@open-inspect/shared";
+import { setAssistantThreadStatusBestEffort } from "./activity-status";
 
 const log = createLogger("handler");
 
 const MAX_REPO_SUGGESTION_OPTIONS = 100;
+type BackgroundTaskScheduler = (promise: Promise<void>) => void;
+
+export function buildAppHomeIntroText(appName: string): string {
+  return `Configure your ${appName} preferences below.`;
+}
 
 /**
  * Build authenticated headers for control plane requests.
@@ -83,7 +92,10 @@ async function createSession(
   model: string,
   reasoningEffort: string | undefined,
   branch: string | undefined,
-  traceId?: string
+  traceId?: string,
+  slackUserId?: string,
+  actorDisplayName?: string,
+  actorEmail?: string
 ): Promise<{ sessionId: string; status: string } | null> {
   const startTime = Date.now();
   const base = {
@@ -93,6 +105,7 @@ async function createSession(
     model,
     reasoning_effort: reasoningEffort,
     branch,
+    slack_user_id: slackUserId,
   };
   try {
     const headers = await getAuthHeaders(env, traceId);
@@ -106,6 +119,10 @@ async function createSession(
         model,
         reasoningEffort,
         branch,
+        spawnSource: "slack-bot",
+        actorUserId: slackUserId,
+        actorDisplayName,
+        actorEmail,
       }),
     });
 
@@ -216,7 +233,7 @@ async function lookupThreadSession(
 ): Promise<ThreadSession | null> {
   try {
     const key = getThreadSessionKey(channel, threadTs);
-    const data = await env.SLACK_KV.get(key, "json");
+    const data = await createKvCacheStore(env.SLACK_KV).get(key, "json");
     if (data && typeof data === "object") {
       return data as ThreadSession;
     }
@@ -244,7 +261,7 @@ async function storeThreadSession(
 ): Promise<void> {
   try {
     const key = getThreadSessionKey(channel, threadTs);
-    await env.SLACK_KV.put(key, JSON.stringify(session), {
+    await createKvCacheStore(env.SLACK_KV).put(key, JSON.stringify(session), {
       expirationTtl: 86400, // 24 hours
     });
   } catch (e) {
@@ -263,7 +280,7 @@ async function storeThreadSession(
 async function clearThreadSession(env: Env, channel: string, threadTs: string): Promise<void> {
   try {
     const key = getThreadSessionKey(channel, threadTs);
-    await env.SLACK_KV.delete(key);
+    await createKvCacheStore(env.SLACK_KV).delete(key);
   } catch (e) {
     log.error("kv.delete", {
       key_prefix: "thread",
@@ -343,7 +360,7 @@ function isValidUserPreferences(data: unknown): data is UserPreferences {
 async function getUserPreferences(env: Env, userId: string): Promise<UserPreferences | null> {
   try {
     const key = getUserPreferencesKey(userId);
-    const data = await env.SLACK_KV.get(key, "json");
+    const data = await createKvCacheStore(env.SLACK_KV).get(key, "json");
     if (isValidUserPreferences(data)) {
       return data;
     }
@@ -387,7 +404,7 @@ async function saveUserPreferences(
       updatedAt: Date.now(),
     };
     // No TTL - preferences persist indefinitely
-    await env.SLACK_KV.put(key, JSON.stringify(prefs));
+    await createKvCacheStore(env.SLACK_KV).put(key, JSON.stringify(prefs));
     return true;
   } catch (e) {
     log.error("kv.put", {
@@ -481,7 +498,7 @@ async function publishAppHome(env: Env, userId: string): Promise<void> {
       type: "section",
       text: {
         type: "mrkdwn",
-        text: "Configure your Open-Inspect preferences below.",
+        text: buildAppHomeIntroText(resolveAppName(env)),
       },
     },
     { type: "divider" },
@@ -854,6 +871,57 @@ function formatChannelContext(channelName: string, channelDescription?: string):
   return context;
 }
 
+function scheduleStartingStatus(
+  scheduleBackground: BackgroundTaskScheduler,
+  env: Env,
+  channel: string,
+  threadTs: string,
+  traceId?: string
+): void {
+  scheduleBackground(
+    setAssistantThreadStatusBestEffort(env, channel, threadTs, "Starting...", {
+      event: "start",
+      traceId,
+    })
+  );
+}
+
+function buildWorkingMessageBlocks(
+  repoFullName: string,
+  options: { reasoning?: string; sessionId?: string; webAppUrl?: string } = {}
+): Array<Record<string, unknown>> {
+  const blocks: Array<Record<string, unknown>> = [
+    {
+      type: "section",
+      text: {
+        type: "mrkdwn",
+        text: options.reasoning
+          ? `Working on *${repoFullName}*...\n_${options.reasoning}_`
+          : `Working on *${repoFullName}*...`,
+      },
+    },
+  ];
+
+  if (options.sessionId && options.webAppUrl) {
+    blocks.push({
+      type: "actions",
+      elements: [
+        {
+          type: "button",
+          text: {
+            type: "plain_text",
+            text: "View Session",
+          },
+          url: `${options.webAppUrl}/session/${options.sessionId}`,
+          action_id: "view_session",
+        },
+      ],
+    });
+  }
+
+  return blocks;
+}
+
 /**
  * Create a session and send the initial prompt.
  * Shared logic between handleAppMention and handleRepoSelection.
@@ -884,6 +952,23 @@ async function startSessionAndSendPrompt(
   const repoBranch = await getUserRepoBranchPreference(env, userId, repo.id);
   const branch = repoBranch ?? globalBranch;
 
+  // Best-effort user info resolution for identity linking
+  let displayName: string | undefined;
+  let email: string | undefined;
+  try {
+    const userInfo = await getUserInfo(env.SLACK_BOT_TOKEN, userId);
+    if (userInfo.ok) {
+      displayName =
+        userInfo.user.profile?.display_name ||
+        userInfo.user.real_name ||
+        userInfo.user.name ||
+        undefined;
+      email = userInfo.user.profile?.email || undefined;
+    }
+  } catch {
+    // Proceed with no display name / email — control plane handles missing fields
+  }
+
   // Create session via control plane with user's preferred model, reasoning effort, and branch
   const session = await createSession(
     env,
@@ -892,7 +977,10 @@ async function startSessionAndSendPrompt(
     model,
     reasoningEffort,
     branch,
-    traceId
+    traceId,
+    userId,
+    displayName,
+    email
   );
 
   if (!session) {
@@ -948,23 +1036,6 @@ async function startSessionAndSendPrompt(
   }
 
   return { sessionId: session.sessionId };
-}
-
-/**
- * Post the "session started" notification to Slack.
- */
-async function postSessionStartedMessage(
-  env: Env,
-  channel: string,
-  threadTs: string,
-  sessionId: string
-): Promise<void> {
-  await postMessage(
-    env.SLACK_BOT_TOKEN,
-    channel,
-    `Session started! The agent is now working on your request.\n\nView progress: ${env.WEB_APP_URL}/session/${sessionId}`,
-    { thread_ts: threadTs }
-  );
 }
 
 const app = new Hono<{ Bindings: Env }>();
@@ -1028,17 +1099,23 @@ app.post("/events", async (c) => {
   const eventId = payload.event_id as string | undefined;
   if (eventId) {
     const dedupeKey = `event:${eventId}`;
-    const existing = await c.env.SLACK_KV.get(dedupeKey);
+    const cacheStore = createKvCacheStore(c.env.SLACK_KV);
+    const existing = await cacheStore.get(dedupeKey);
     if (existing) {
       log.debug("slack.event.duplicate", { trace_id: traceId, event_id: eventId });
       return c.json({ ok: true });
     }
     // Mark as seen with 1 hour TTL (Slack retries are within minutes)
-    await c.env.SLACK_KV.put(dedupeKey, "1", { expirationTtl: 3600 });
+    await cacheStore.put(dedupeKey, "1", { expirationTtl: 3600 });
   }
 
+  const scheduleBackground = (promise: Promise<void>) => c.executionCtx.waitUntil(promise);
+  const eventTask = Promise.resolve().then(() =>
+    handleSlackEvent(payload, c.env, traceId, scheduleBackground)
+  );
+
   // Process event asynchronously
-  c.executionCtx.waitUntil(handleSlackEvent(payload, c.env, traceId));
+  c.executionCtx.waitUntil(eventTask);
 
   log.info("http.request", {
     trace_id: traceId,
@@ -1146,10 +1223,15 @@ app.post("/interactions", async (c) => {
   const shouldOpenModalInline =
     actionId === "open_branch_modal" || actionId === REPO_BRANCH_SELECTOR_ACTION_ID;
 
+  const scheduleBackground = (promise: Promise<void>) => c.executionCtx.waitUntil(promise);
+
   if (shouldOpenModalInline) {
-    await handleSlackInteraction(payload, c.env, traceId);
+    await handleSlackInteraction(payload, c.env, traceId, scheduleBackground);
   } else {
-    c.executionCtx.waitUntil(handleSlackInteraction(payload, c.env, traceId));
+    const interactionTask = Promise.resolve().then(() =>
+      handleSlackInteraction(payload, c.env, traceId, scheduleBackground)
+    );
+    c.executionCtx.waitUntil(interactionTask);
   }
 
   log.info("http.request", {
@@ -1201,7 +1283,8 @@ async function handleSlackEvent(
     };
   },
   env: Env,
-  traceId?: string
+  traceId: string | undefined,
+  scheduleBackground: BackgroundTaskScheduler
 ): Promise<void> {
   if (payload.type !== "event_callback" || !payload.event) {
     return;
@@ -1233,14 +1316,15 @@ async function handleSlackEvent(
         channel_type: event.channel_type,
       },
       env,
-      traceId
+      traceId,
+      scheduleBackground
     );
     return;
   }
 
   // Handle app_mention events
   if (event.type === "app_mention" && event.text && event.channel && event.ts) {
-    await handleAppMention(event as Required<typeof event>, env, traceId);
+    await handleAppMention(event as Required<typeof event>, env, traceId, scheduleBackground);
   }
 }
 
@@ -1257,6 +1341,7 @@ interface IncomingMessageParams {
   channelDescription?: string;
   env: Env;
   traceId?: string;
+  scheduleBackground: BackgroundTaskScheduler;
 }
 
 /**
@@ -1268,7 +1353,6 @@ interface IncomingMessageParams {
  * - Repo classification
  * - Clarification / repo selection UI
  * - Ack message + session creation
- * - Session started message
  */
 async function handleIncomingMessage(params: IncomingMessageParams): Promise<void> {
   const {
@@ -1281,6 +1365,7 @@ async function handleIncomingMessage(params: IncomingMessageParams): Promise<voi
     channelDescription,
     env,
     traceId,
+    scheduleBackground,
   } = params;
 
   if (!messageText) {
@@ -1334,8 +1419,8 @@ async function handleIncomingMessage(params: IncomingMessageParams): Promise<voi
       const channelContext = channelName
         ? formatChannelContext(channelName, channelDescription)
         : "";
-      const threadContext = previousMessages ? formatThreadContext(previousMessages) : "";
-      const promptContent = channelContext + threadContext + messageText;
+      // Existing sessions already have prior turns; adding Slack bot replies again can echo stale answers.
+      const promptContent = channelContext + messageText;
 
       const promptResult = await sendPrompt(
         env,
@@ -1401,7 +1486,7 @@ async function handleIncomingMessage(params: IncomingMessageParams): Promise<voi
 
     // Store original message in KV for later retrieval when user selects a repo
     const pendingKey = `pending:${channel}:${threadTs || ts}`;
-    await env.SLACK_KV.put(
+    await createKvCacheStore(env.SLACK_KV).put(
       pendingKey,
       JSON.stringify({
         message: messageText,
@@ -1473,19 +1558,12 @@ async function handleIncomingMessage(params: IncomingMessageParams): Promise<voi
     `Working on *${repo.fullName}*...`,
     {
       thread_ts: threadKey,
-      blocks: [
-        {
-          type: "section",
-          text: {
-            type: "mrkdwn",
-            text: `Working on *${repo.fullName}*...\n_${result.reasoning}_`,
-          },
-        },
-      ],
+      blocks: buildWorkingMessageBlocks(repo.fullName, { reasoning: result.reasoning }),
     }
   );
 
-  const ackTs = ackResult.ts;
+  const ackTs = ackResult.ok ? ackResult.ts : undefined;
+  scheduleStartingStatus(scheduleBackground, env, channel, threadKey, traceId);
 
   // Create session and send prompt using shared logic
   const sessionResult = await startSessionAndSendPrompt(
@@ -1508,34 +1586,14 @@ async function handleIncomingMessage(params: IncomingMessageParams): Promise<voi
   // Update the acknowledgment message with session link button
   if (ackTs) {
     await updateMessage(env.SLACK_BOT_TOKEN, channel, ackTs, `Working on *${repo.fullName}*...`, {
-      blocks: [
-        {
-          type: "section",
-          text: {
-            type: "mrkdwn",
-            text: `Working on *${repo.fullName}*...\n_${result.reasoning}_`,
-          },
-        },
-        {
-          type: "actions",
-          elements: [
-            {
-              type: "button",
-              text: {
-                type: "plain_text",
-                text: "View Session",
-              },
-              url: `${env.WEB_APP_URL}/session/${sessionResult.sessionId}`,
-              action_id: "view_session",
-            },
-          ],
-        },
-      ],
+      blocks: buildWorkingMessageBlocks(repo.fullName, {
+        reasoning: result.reasoning,
+        sessionId: sessionResult.sessionId,
+        webAppUrl: env.WEB_APP_URL,
+      }),
     });
+    scheduleStartingStatus(scheduleBackground, env, channel, threadKey, traceId);
   }
-
-  // Post that the agent is working
-  await postSessionStartedMessage(env, channel, threadKey, sessionResult.sessionId);
 }
 
 /**
@@ -1551,23 +1609,31 @@ async function handleAppMention(
     thread_ts?: string;
   },
   env: Env,
-  traceId?: string
+  traceId: string | undefined,
+  scheduleBackground: BackgroundTaskScheduler
 ): Promise<void> {
   // Remove the bot mention from the text
   const messageText = stripMentions(event.text);
+  const threadKey = event.thread_ts || event.ts;
+
+  if (messageText) {
+    scheduleStartingStatus(scheduleBackground, env, event.channel, threadKey, traceId);
+  }
 
   // Get channel context
   let channelName: string | undefined;
   let channelDescription: string | undefined;
 
-  try {
-    const channelInfo = await getChannelInfo(env.SLACK_BOT_TOKEN, event.channel);
-    if (channelInfo.ok && channelInfo.channel) {
-      channelName = channelInfo.channel.name;
-      channelDescription = channelInfo.channel.topic?.value || channelInfo.channel.purpose?.value;
+  if (messageText) {
+    try {
+      const channelInfo = await getChannelInfo(env.SLACK_BOT_TOKEN, event.channel);
+      if (channelInfo.ok && channelInfo.channel) {
+        channelName = channelInfo.channel.name;
+        channelDescription = channelInfo.channel.topic?.value || channelInfo.channel.purpose?.value;
+      }
+    } catch {
+      // Channel info not available
     }
-  } catch {
-    // Channel info not available
   }
 
   await handleIncomingMessage({
@@ -1580,6 +1646,7 @@ async function handleAppMention(
     channelDescription,
     env,
     traceId,
+    scheduleBackground,
   });
 }
 
@@ -1598,12 +1665,18 @@ async function handleDirectMessage(
     channel_type?: string;
   },
   env: Env,
-  traceId?: string
+  traceId: string | undefined,
+  scheduleBackground: BackgroundTaskScheduler
 ): Promise<void> {
   log.info("slack.dm.received", { trace_id: traceId, user: event.user, channel: event.channel });
 
   // Strip any @mentions (users may type "@Bot <request>" in DMs)
   const messageText = stripMentions(event.text);
+  const threadKey = event.thread_ts || event.ts;
+
+  if (messageText) {
+    scheduleStartingStatus(scheduleBackground, env, event.channel, threadKey, traceId);
+  }
 
   await handleIncomingMessage({
     text: messageText,
@@ -1613,6 +1686,7 @@ async function handleDirectMessage(
     threadTs: event.thread_ts,
     env,
     traceId,
+    scheduleBackground,
   });
 }
 
@@ -1625,11 +1699,12 @@ async function handleRepoSelection(
   messageTs: string,
   threadTs: string | undefined,
   env: Env,
-  traceId?: string
+  traceId: string | undefined,
+  scheduleBackground: BackgroundTaskScheduler
 ): Promise<void> {
   // Retrieve pending message from KV
   const pendingKey = `pending:${channel}:${threadTs || messageTs}`;
-  const pendingData = await env.SLACK_KV.get(pendingKey, "json");
+  const pendingData = await createKvCacheStore(env.SLACK_KV).get(pendingKey, "json");
 
   if (!pendingData || typeof pendingData !== "object") {
     await postMessage(
@@ -1655,6 +1730,8 @@ async function handleRepoSelection(
     channelDescription?: string;
   };
 
+  const threadKey = threadTs || messageTs;
+
   // Find the repo config
   const repos = await getAvailableRepos(env, traceId);
   const repo = repos.find((r) => r.id === repoId);
@@ -1669,12 +1746,20 @@ async function handleRepoSelection(
     return;
   }
 
-  // Post acknowledgment
-  await postMessage(env.SLACK_BOT_TOKEN, channel, `Working on *${repo.fullName}*...`, {
-    thread_ts: threadTs || messageTs,
-  });
+  scheduleStartingStatus(scheduleBackground, env, channel, threadKey, traceId);
 
-  const threadKey = threadTs || messageTs;
+  // Post acknowledgment
+  const ackResult = await postMessage(
+    env.SLACK_BOT_TOKEN,
+    channel,
+    `Working on *${repo.fullName}*...`,
+    {
+      thread_ts: threadKey,
+      blocks: buildWorkingMessageBlocks(repo.fullName),
+    }
+  );
+  const ackTs = ackResult.ok ? ackResult.ts : undefined;
+  scheduleStartingStatus(scheduleBackground, env, channel, threadKey, traceId);
 
   // Create session and send prompt using shared logic
   const sessionResult = await startSessionAndSendPrompt(
@@ -1695,10 +1780,17 @@ async function handleRepoSelection(
   }
 
   // Clean up pending message
-  await env.SLACK_KV.delete(pendingKey);
+  await createKvCacheStore(env.SLACK_KV).delete(pendingKey);
 
-  // Post that the agent is working
-  await postSessionStartedMessage(env, channel, threadKey, sessionResult.sessionId);
+  if (ackTs) {
+    await updateMessage(env.SLACK_BOT_TOKEN, channel, ackTs, `Working on *${repo.fullName}*...`, {
+      blocks: buildWorkingMessageBlocks(repo.fullName, {
+        sessionId: sessionResult.sessionId,
+        webAppUrl: env.WEB_APP_URL,
+      }),
+    });
+    scheduleStartingStatus(scheduleBackground, env, channel, threadKey, traceId);
+  }
 }
 
 /**
@@ -1707,7 +1799,8 @@ async function handleRepoSelection(
 async function handleSlackInteraction(
   payload: SlackInteractionPayload,
   env: Env,
-  traceId?: string
+  traceId: string | undefined,
+  scheduleBackground: BackgroundTaskScheduler
 ): Promise<void> {
   const userId = payload.user?.id;
 
@@ -1890,7 +1983,15 @@ async function handleSlackInteraction(
       if (!channel || !messageTs) return;
       const repoId = action.selected_option?.value;
       if (repoId) {
-        await handleRepoSelection(repoId, channel, messageTs, threadTs, env, traceId);
+        await handleRepoSelection(
+          repoId,
+          channel,
+          messageTs,
+          threadTs,
+          env,
+          traceId,
+          scheduleBackground
+        );
       }
       break;
     }

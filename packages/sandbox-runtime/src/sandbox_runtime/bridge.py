@@ -134,8 +134,8 @@ class AgentBridge:
     SSE_INACTIVITY_TIMEOUT_MAX = 3600.0
     HTTP_CONNECT_TIMEOUT = 30.0
     HTTP_DEFAULT_TIMEOUT = 30.0
-    OPENCODE_REQUEST_TIMEOUT = 10.0
-    GIT_PUSH_TIMEOUT_SECONDS = 120.0
+    OPENCODE_REQUEST_TIMEOUT = 30.0
+    GIT_PUSH_TIMEOUT_SECONDS = 300.0
     GIT_PUSH_TERMINATE_GRACE_SECONDS = 5.0
     PROMPT_MAX_DURATION = 5400.0
     GIT_CONFIG_TIMEOUT_SECONDS = 10.0
@@ -200,9 +200,6 @@ class AgentBridge:
         # Pending ACKs: events sent but not yet acknowledged by the control plane.
         # Keyed by ackId, re-sent on reconnect until the DO confirms receipt.
         self._pending_acks: dict[str, dict[str, Any]] = {}
-
-        # Tracks the message ID of the currently executing prompt
-        self._inflight_message_id: str | None = None
 
     @property
     def ws_url(self) -> str:
@@ -593,7 +590,6 @@ class AgentBridge:
     async def _handle_prompt(self, cmd: dict[str, Any]) -> None:
         """Handle prompt command - send to OpenCode and stream response."""
         message_id = cmd.get("messageId") or cmd.get("message_id", "unknown")
-        self._inflight_message_id = message_id
         content = cmd.get("content", "")
         model = cmd.get("model")
         reasoning_effort = cmd.get("reasoningEffort")
@@ -608,19 +604,19 @@ class AgentBridge:
             reasoning_effort=reasoning_effort,
         )
 
-        scm_name = author_data.get("scmName")
-        scm_email = author_data.get("scmEmail")
-        await self._configure_git_identity(
-            GitUser(
-                name=scm_name or FALLBACK_GIT_USER.name,
-                email=scm_email or FALLBACK_GIT_USER.email,
-            )
-        )
-
-        if not self.opencode_session_id:
-            await self._create_opencode_session()
-
         try:
+            scm_name = author_data.get("scmName")
+            scm_email = author_data.get("scmEmail")
+            await self._configure_git_identity(
+                GitUser(
+                    name=scm_name or FALLBACK_GIT_USER.name,
+                    email=scm_email or FALLBACK_GIT_USER.email,
+                )
+            )
+
+            if not self.opencode_session_id:
+                await self._create_opencode_session()
+
             had_error = False
             error_message = None
             async for event in self._stream_opencode_response_sse(
@@ -688,13 +684,14 @@ class AgentBridge:
         await self._save_session_id()
 
     @staticmethod
-    def _extract_error_message(error: Any) -> str | None:
+    def _extract_error_message(error: object) -> str | None:
         """Extract message from OpenCode NamedError: { "name": "...", "data": { "message": "..." } }."""
         if isinstance(error, dict):
             data = error.get("data")
             if isinstance(data, dict) and "message" in data:
-                return data["message"]
-            return error.get("message") or error.get("name")
+                return str(data["message"])
+            message = error.get("message") or error.get("name")
+            return str(message) if message else None
         return str(error) if error else None
 
     def _transform_part_to_event(
@@ -761,6 +758,7 @@ class AgentBridge:
     }
     ANTHROPIC_ADAPTIVE_THINKING_MODELS: ClassVar[set[str]] = {
         "claude-opus-4-6",
+        "claude-opus-4-7",
         "claude-sonnet-4-6",
     }
     ANTHROPIC_ADAPTIVE_EFFORTS: ClassVar[set[str]] = {"low", "medium", "high", "max"}
@@ -1722,7 +1720,7 @@ class AgentBridge:
         return value
 
 
-async def main():
+async def main() -> None:
     """Entry point for bridge process."""
     parser = argparse.ArgumentParser(description="Open-Inspect Agent Bridge")
     parser.add_argument("--sandbox-id", required=True, help="Sandbox ID")

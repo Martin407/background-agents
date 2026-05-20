@@ -1,6 +1,6 @@
-import { generateBranchName } from "@open-inspect/shared";
+import { generateBranchName, type SessionArtifact } from "@open-inspect/shared";
 import type { Logger } from "../logger";
-import { resolveHeadBranchForPr } from "../source-control/branch-resolution";
+import { resolveHeadBranchForPr, sanitizeBranchName } from "../source-control/branch-resolution";
 import {
   SourceControlProviderError,
   type SourceControlProvider,
@@ -59,12 +59,10 @@ export interface PullRequestServiceDeps {
   log: Logger;
   generateId: () => string;
   pushBranchToRemote: (headBranch: string, pushSpec: GitPushSpec) => Promise<PushBranchResult>;
-  broadcastArtifactCreated: (artifact: {
-    id: string;
-    type: "pr" | "branch";
-    url: string;
-    prNumber?: number;
-  }) => void;
+  broadcastSessionBranch: (branchName: string) => void;
+  broadcastArtifactCreated: (artifact: SessionArtifact) => void;
+  /** Display name used in the PR body footer (e.g. "Created with [name](url)"). */
+  appName: string;
 }
 
 /**
@@ -143,21 +141,35 @@ export class SessionPullRequestService {
         resolution_source: branchResolution.source,
         base_branch: baseBranch,
       });
+      const sanitizedHeadBranch = sanitizeBranchName(headBranch);
+      if (!sanitizedHeadBranch) {
+        return {
+          kind: "error",
+          status: 400,
+          error: "headBranch must be a valid branch name",
+        };
+      }
+
       const pushSpec = this.deps.sourceControlProvider.buildGitPushSpec({
         owner: session.repo_owner,
         name: session.repo_name,
         sourceRef: "HEAD",
-        targetBranch: headBranch,
+        targetBranch: sanitizedHeadBranch,
         auth: pushAuth,
         force: true,
       });
 
-      const pushResult = await this.deps.pushBranchToRemote(headBranch, pushSpec);
+      const pushResult = await this.deps.pushBranchToRemote(sanitizedHeadBranch, pushSpec);
       if (!pushResult.success) {
         return { kind: "error", status: 500, error: pushResult.error };
       }
 
-      this.deps.repository.updateSessionBranch(session.id, headBranch);
+      if (session.branch_name !== sanitizedHeadBranch) {
+        this.deps.repository.updateSessionBranch(session.id, sanitizedHeadBranch);
+      }
+      // Broadcast even when the stored branch is already current so connected clients converge
+      // after missed or out-of-order updates.
+      this.deps.broadcastSessionBranch(sanitizedHeadBranch);
 
       const latestArtifacts = this.deps.repository.listArtifacts();
       const latestPrArtifact = latestArtifacts.find((artifact) => artifact.type === "pr");
@@ -173,28 +185,30 @@ export class SessionPullRequestService {
       // (e.g. sessions triggered from Linear or other integrations without user GitHub OAuth)
       const prAuth = input.promptingAuth ?? appAuth;
 
-      const fullBody = input.body + `\n\n---\n*Created with [Open-Inspect](${input.sessionUrl})*`;
+      const fullBody =
+        input.body + `\n\n---\n*Created with [${this.deps.appName}](${input.sessionUrl})*`;
 
       const prResult = await this.deps.sourceControlProvider.createPullRequest(prAuth, {
         repository: repoInfo,
         title: input.title,
         body: fullBody,
-        sourceBranch: headBranch,
+        sourceBranch: sanitizedHeadBranch,
         targetBranch: baseBranch,
       });
 
       const artifactId = this.deps.generateId();
       const now = Date.now();
+      const artifactMetadata = {
+        number: prResult.id,
+        state: prResult.state,
+        head: sanitizedHeadBranch,
+        base: baseBranch,
+      };
       this.deps.repository.createArtifact({
         id: artifactId,
         type: "pr",
         url: prResult.webUrl,
-        metadata: JSON.stringify({
-          number: prResult.id,
-          state: prResult.state,
-          head: headBranch,
-          base: baseBranch,
-        }),
+        metadata: JSON.stringify(artifactMetadata),
         createdAt: now,
       });
 
@@ -202,7 +216,8 @@ export class SessionPullRequestService {
         id: artifactId,
         type: "pr",
         url: prResult.webUrl,
-        prNumber: prResult.id,
+        metadata: artifactMetadata,
+        createdAt: now,
       });
 
       return {

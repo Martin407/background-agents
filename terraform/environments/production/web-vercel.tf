@@ -61,6 +61,24 @@ module "web_app" {
       targets   = ["production", "preview"]
       sensitive = false
     },
+    {
+      key       = "NEXT_PUBLIC_APP_NAME"
+      value     = var.app_name
+      targets   = ["production", "preview"]
+      sensitive = false
+    },
+    {
+      key       = "NEXT_PUBLIC_APP_SHORT_NAME"
+      value     = var.app_short_name
+      targets   = ["production", "preview"]
+      sensitive = false
+    },
+    {
+      key       = "NEXT_PUBLIC_APP_ICON_URL"
+      value     = var.app_icon_url
+      targets   = ["production", "preview"]
+      sensitive = false
+    },
     # Internal
     {
       key       = "INTERNAL_CALLBACK_SECRET"
@@ -78,6 +96,12 @@ module "web_app" {
     {
       key       = "ALLOWED_EMAIL_DOMAINS"
       value     = var.allowed_email_domains
+      targets   = ["production", "preview"]
+      sensitive = false
+    },
+    {
+      key       = "UNSAFE_ALLOW_ALL_USERS"
+      value     = tostring(var.unsafe_allow_all_users)
       targets   = ["production", "preview"]
       sensitive = false
     },

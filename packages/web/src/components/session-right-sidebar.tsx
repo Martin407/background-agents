@@ -7,6 +7,7 @@ import {
   MetadataSection,
   TasksSection,
   FilesChangedSection,
+  MediaSection,
   CodeServerSection,
   TunnelUrlsSection,
 } from "./sidebar";
@@ -19,26 +20,35 @@ import type { Artifact, SandboxEvent } from "@/types/session";
 import type { ParticipantPresence, SessionState } from "@open-inspect/shared";
 
 interface SessionRightSidebarProps {
+  sessionId: string;
   sessionState: SessionState | null;
   participants: ParticipantPresence[];
   events: SandboxEvent[];
   artifacts: Artifact[];
   terminalOpen?: boolean;
   onToggleTerminal?: () => void;
+  onOpenMedia: (artifactId: string) => void;
 }
 
 export type SessionRightSidebarContentProps = SessionRightSidebarProps;
 
 export function SessionRightSidebarContent({
+  sessionId,
   sessionState,
   participants,
   events,
   artifacts,
   terminalOpen,
   onToggleTerminal,
+  onOpenMedia,
 }: SessionRightSidebarContentProps) {
   const tasks = useMemo(() => extractLatestTasks(events), [events]);
   const filesChanged = useMemo(() => extractChangedFiles(events), [events]);
+  const mediaArtifacts = useMemo(
+    () =>
+      artifacts.filter((artifact) => artifact.type === "screenshot" || artifact.type === "video"),
+    [artifacts]
+  );
   const terminalUrl = useMemo(
     () => buildAuthenticatedUrl(sessionState?.ttydUrl, sessionState?.ttydToken),
     [sessionState?.ttydUrl, sessionState?.ttydToken]
@@ -48,9 +58,9 @@ export function SessionRightSidebarContent({
     return (
       <div className="p-4">
         <div className="animate-pulse space-y-4">
-          <div className="h-4 bg-muted w-3/4" />
-          <div className="h-4 bg-muted w-1/2" />
-          <div className="h-4 bg-muted w-2/3" />
+          <div className="h-4 bg-muted w-3/4 rounded" />
+          <div className="h-4 bg-muted w-1/2 rounded" />
+          <div className="h-4 bg-muted w-2/3 rounded" />
         </div>
       </div>
     );
@@ -75,6 +85,7 @@ export function SessionRightSidebarContent({
           repoName={sessionState.repoName}
           artifacts={artifacts}
           parentSessionId={sessionState.parentSessionId}
+          totalCost={sessionState.totalCost}
         />
       </div>
 
@@ -144,6 +155,17 @@ export function SessionRightSidebarContent({
         </CollapsibleSection>
       )}
 
+      {/* Media */}
+      {mediaArtifacts.length > 0 && (
+        <CollapsibleSection title={`Media (${mediaArtifacts.length})`} defaultOpen={true}>
+          <MediaSection
+            sessionId={sessionId}
+            mediaArtifacts={mediaArtifacts}
+            onOpenMedia={onOpenMedia}
+          />
+        </CollapsibleSection>
+      )}
+
       {/* Artifacts info when no specific sections are populated */}
       {tasks.length === 0 && filesChanged.length === 0 && artifacts.length === 0 && (
         <div className="px-4 py-4">
@@ -157,22 +179,26 @@ export function SessionRightSidebarContent({
 }
 
 export function SessionRightSidebar({
+  sessionId,
   sessionState,
   participants,
   events,
   artifacts,
   terminalOpen,
   onToggleTerminal,
+  onOpenMedia,
 }: SessionRightSidebarProps) {
   return (
     <aside className="w-80 border-l border-border-muted overflow-y-auto hidden lg:block">
       <SessionRightSidebarContent
+        sessionId={sessionId}
         sessionState={sessionState}
         participants={participants}
         events={events}
         artifacts={artifacts}
         terminalOpen={terminalOpen}
         onToggleTerminal={onToggleTerminal}
+        onOpenMedia={onOpenMedia}
       />
     </aside>
   );

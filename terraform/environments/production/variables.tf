@@ -25,14 +25,14 @@ variable "cloudflare_worker_subdomain" {
 }
 
 variable "vercel_api_token" {
-  description = "Vercel API token (required only when web_platform = 'vercel')"
+  description = "Vercel API token (required only when web_platform = 'vercel'). Do NOT set to empty string — the Vercel provider validates this on init even when no Vercel resources are created. Leave unset to use the built-in dummy token for Cloudflare-only deployments."
   type        = string
   sensitive   = true
-  default     = "unused"
+  default     = "000000000000000000000000"
 }
 
 variable "vercel_team_id" {
-  description = "Vercel team ID (required only when web_platform = 'vercel')"
+  description = "Vercel team ID (required only when web_platform = 'vercel'). Leave unset when using Cloudflare."
   type        = string
   default     = "unused"
 }
@@ -331,6 +331,24 @@ variable "deployment_name" {
   type        = string
 }
 
+variable "app_name" {
+  description = "Display name shown in the web UI tab title, sign-in page, bot messages (Slack, Linear), PR body footer, and outbound HTTP User-Agent headers."
+  type        = string
+  default     = "Open-Inspect"
+}
+
+variable "app_short_name" {
+  description = "Short brand label shown only in the web sidebar header. Defaults to 'Inspect' to keep the sidebar visually compact."
+  type        = string
+  default     = "Inspect"
+}
+
+variable "app_icon_url" {
+  description = "Optional URL (absolute or root-relative) to a custom logo image for the command menu and browser favicon. Leave empty to use the built-in icon."
+  type        = string
+  default     = ""
+}
+
 variable "enable_durable_object_bindings" {
   description = "Enable DO bindings. For initial deployment: set to false (applies migrations), then set to true (adds bindings)."
   type        = bool
@@ -368,17 +386,39 @@ variable "project_root" {
 }
 
 # =============================================================================
+# R2 Storage
+# =============================================================================
+
+variable "r2_media_location" {
+  description = "Cloudflare R2 location hint for the media bucket (e.g. ENAM, WNAM, APAC, WEUR, EEUR)"
+  type        = string
+  default     = "ENAM"
+}
+
+variable "r2_media_bucket_name" {
+  description = "Override the R2 media bucket name. Leave empty to use the default 'open-inspect-media-<deployment_name>'. Set this when the bucket must be pre-created out-of-band (e.g. when the Terraform credentials cannot create R2 buckets)."
+  type        = string
+  default     = ""
+}
+
+# =============================================================================
 # Access Control
 # =============================================================================
 
 variable "allowed_users" {
-  description = "Comma-separated list of GitHub usernames allowed to sign in (empty = allow all)"
+  description = "Comma-separated list of GitHub usernames allowed to sign in. Leave empty only when allowed_email_domains is set or unsafe_allow_all_users is true."
   type        = string
   default     = ""
 }
 
 variable "allowed_email_domains" {
-  description = "Comma-separated list of email domains allowed to sign in (e.g., 'example.com,corp.io'). Empty = allow all domains."
+  description = "Comma-separated list of email domains allowed to sign in (e.g., 'example.com,corp.io'). Leave empty only when allowed_users is set or unsafe_allow_all_users is true."
   type        = string
   default     = ""
+}
+
+variable "unsafe_allow_all_users" {
+  description = "Bypass Terraform's access-control safety check and allow any authenticated GitHub user to sign in when both allowlists are empty. Set to true only for intentionally open deployments."
+  type        = bool
+  default     = false
 }

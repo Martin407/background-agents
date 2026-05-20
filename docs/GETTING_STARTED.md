@@ -56,10 +56,8 @@ brew install terraform
 # Node.js (22+)
 brew install node@22
 
-# Python 3.12+, uv, and Modal CLI
+# Python 3.12+ and uv (Modal CLI is installed via uv sync below)
 brew install python@3.12 uv
-pipx install modal
-modal setup
 
 # Wrangler CLI (for initial R2 bucket setup)
 npm install -g wrangler
@@ -80,6 +78,9 @@ npm install
 
 # Build the shared package (required before Terraform deployment)
 npm run build -w @open-inspect/shared
+
+# Install Python dependencies for Modal deployment (includes sandbox-runtime)
+cd packages/modal-infra && uv sync --frozen && cd -
 ```
 
 ---
@@ -100,7 +101,13 @@ npm run build -w @open-inspect/shared
    of the panel for `*.YOUR-SUBDOMAIN.workers.dev`
 4. **Create API Token** at [API Tokens](https://dash.cloudflare.com/profile/api-tokens):
    - Use template: "Edit Cloudflare Workers"
-   - Add permissions: Workers KV Storage (Edit), Workers R2 Storage (Edit)
+   - Verify it has these permissions:
+     - Account | Workers KV Storage | Edit (should be included with template)
+     - Account | Workers R2 Storage | Edit (should be included with template)
+     - Account | D1 | Edit
+   - Set "Account Resources" to include your account
+   - Set "Zone Resources" to include all zones from your account
+   - Click "Continue to summary" and "Update token"
 5. **Enable R2**: Must add payment info, but first 10 GB/month is free
 
 ### Cloudflare R2 (Terraform State Backend)
@@ -124,7 +131,10 @@ Create an R2 API Token:
 
 ### Vercel (only if `web_platform = "vercel"`)
 
-> Skip this section if you're deploying the web app to Cloudflare Workers.
+> Skip this section if you're deploying the web app to Cloudflare Workers. **Important**: Do not set
+> `vercel_api_token` or `vercel_team_id` to empty strings in your `terraform.tfvars` — leave them
+> unset so the dummy defaults are used. The Vercel Terraform provider validates the token on init
+> even when no Vercel resources are created.
 
 1. Go to [Vercel Account Settings → Tokens](https://vercel.com/account/tokens)
 2. Create a new token with full access
@@ -146,7 +156,10 @@ Create an R2 API Token:
 
 > Only required when `sandbox_provider = "daytona"`.
 
-1. Create a [Daytona](https://app.daytona.io) account and generate an **API key**
+1. Create a [Daytona](https://app.daytona.io) account and generate an **API key** with the following
+   permissions:
+   - **Sandboxes**: Read, Write (runtime sandbox management and preview URLs)
+   - **Snapshots**: Read, Write, Delete (automated snapshot builds via Terraform)
 2. Note the **API URL** (e.g., `https://app.daytona.io/api`) and optional **target**
 3. Seed the named base snapshot before pointing traffic at Daytona:
    ```bash
@@ -154,10 +167,15 @@ Create an R2 API Token:
    pip install daytona   # or: uv pip install daytona
    python -m src.bootstrap --force
    ```
+   After initial setup, Terraform automatically rebuilds the snapshot when source files change.
 4. Set `sandbox_provider = "daytona"` in `terraform.tfvars`
 5. Set `daytona_api_url`, `daytona_api_key`, and `daytona_base_snapshot` in `terraform.tfvars`
 
 The control plane calls the Daytona REST API directly — no shim service to deploy.
+
+> **Important**: Unlike Modal, the Daytona provider does not automatically inject LLM API keys into
+> sandboxes. If you plan to use Claude models, add `ANTHROPIC_API_KEY` as a **global secret** in
+> Settings > Secrets after deploying. See [Secrets Management](SECRETS.md) for details.
 
 ### Anthropic
 
@@ -331,11 +349,17 @@ cloudflare_worker_subdomain = "your-subdomain"  # e.g., "twilight-unit-b2cf" (wi
 web_platform                = "vercel"
 
 # Vercel (only required when web_platform = "vercel")
+# If using Cloudflare, do NOT set these — leave them out so the dummy defaults are used.
 vercel_api_token            = "your-vercel-token"
 vercel_team_id              = "team_xxxxx"       # Your Vercel ID (even personal accounts have one)
 modal_token_id              = "your-modal-token-id"
 modal_token_secret          = "your-modal-token-secret"
 modal_workspace             = "your-modal-workspace"
+
+# Daytona (only required when sandbox_provider = "daytona")
+# daytona_api_url           = "https://app.daytona.io/api"
+# daytona_api_key           = "your-daytona-api-key"
+# daytona_base_snapshot     = "your-snapshot-name"
 
 # GitHub App (used for both OAuth and repository access)
 github_client_id     = "Iv1.abc123..."           # From GitHub App settings
@@ -375,17 +399,32 @@ nextauth_secret          = "your-generated-value"
 deployment_name = "your-unique-name"  # e.g., "acme", "johndoe", "mycompany"
 project_root    = "../../../"
 
+# Branding (optional — defaults shown)
+# Display name shown in the web UI tab title, sign-in page, landing hero, bot
+# messages (Slack/Linear), PR body footer, and outbound HTTP User-Agent.
+# app_name = "Open-Inspect"
+# Short brand label shown only in the sidebar header.
+# app_short_name = "Inspect"
+# Optional URL (absolute or root-relative) to a custom logo/favicon. When set,
+# replaces the built-in icon in the command menu and browser favicon.
+# app_icon_url = ""
+
 # Initial deployment: set both to false (see Step 7)
 enable_durable_object_bindings = false
 enable_service_bindings        = false
 
-# Access Control (at least one recommended for security)
+# Access Control (set at least one allowlist for production)
 allowed_users         = "your-github-username"  # Comma-separated GitHub usernames, or empty
 allowed_email_domains = ""                      # Comma-separated domains (e.g., "example.com,corp.io")
+
+# Explicitly opt into open access only if you want any authenticated GitHub user
+# to be able to sign in when both allowlists are empty.
+unsafe_allow_all_users = false
 ```
 
 > **Note**: Review `allowed_users` and `allowed_email_domains` carefully - these control who can
-> sign in. If both are empty, any GitHub user can access your deployment.
+> sign in. Terraform now fails if both are empty unless you explicitly set
+> `unsafe_allow_all_users = true`.
 
 ---
 
@@ -526,9 +565,12 @@ Or construct it from your App's slug: if your app is named `My-Inspect-App`, the
 
 ### Usage
 
-- **Code Review**: Assign the bot as a PR reviewer — it performs an automated review
+- **Code Review**: Open a non-draft PR in a repository where auto-review is enabled — it performs an
+  automated review
 - **Comment Actions**: @mention the bot in a PR comment with instructions (e.g.,
-  `@my-app[bot] fix the failing test`)
+  `@my-app[bot] explain why this test is failing`)
+
+For day-to-day workflows, see [GitHub Integration](./integrations/GITHUB.md).
 
 ---
 
@@ -646,6 +688,9 @@ Go to your fork's Settings → Secrets and variables → Actions, and add:
 | `ENABLE_GITHUB_BOT`           | `true` to deploy GitHub bot worker (or empty to skip)                         |
 | `GH_WEBHOOK_SECRET`           | GitHub webhook secret (required if GitHub bot enabled)                        |
 | `GH_BOT_USERNAME`             | GitHub App bot username, e.g., `my-app[bot]` (required if GitHub bot enabled) |
+| `APP_NAME`                    | Optional display name for whitelabeling (default: `Open-Inspect`)             |
+| `APP_SHORT_NAME`              | Optional short label for sidebar header (default: `Inspect`)                  |
+| `APP_ICON_URL`                | Optional URL to a custom logo/favicon (default: built-in icon)                |
 
 **Bulk upload secrets with `gh` CLI:**
 
@@ -726,12 +771,25 @@ URL to match your web app URL:
 ### Modal deployment fails
 
 ```bash
-# Check Modal CLI is working
-modal token show
+# Check Modal CLI is working (from packages/modal-infra)
+cd packages/modal-infra
+uv run modal token show
 
 # View Modal logs
-modal app logs open-inspect
+uv run modal app logs open-inspect
 ```
+
+### Modal deployment fails with "No module named 'sandbox_runtime'"
+
+The `sandbox_runtime` package is a sibling package that must be installed before deploying. From the
+repository root:
+
+```bash
+cd packages/modal-infra && uv sync --frozen && cd -
+```
+
+This installs all Modal deployment dependencies including `sandbox_runtime` (resolved via
+`[tool.uv.sources]` in `pyproject.toml`).
 
 ### Worker deployment fails / "no such file or directory" for dist/index.js
 
@@ -776,8 +834,30 @@ If the bot doesn't see the original message when tagged in a thread reply:
 2. Check the webhook secret matches `github_webhook_secret` in terraform.tfvars
 3. Confirm `enable_github_bot = true` in terraform.tfvars and the worker is deployed
 4. Check that `github_bot_username` matches your App's bot login (e.g., `my-app[bot]`)
-5. For PR reviews, ensure the bot is assigned as a reviewer (not just mentioned)
+5. For PR reviews, ensure auto-review is enabled for the repository and the PR is not a draft
 6. For comment actions, ensure the bot is @mentioned in a **PR** comment (not an issue)
+
+### "Model not found" errors (Daytona provider)
+
+If sessions fail with "Model not found" when using `sandbox_provider = "daytona"`, the required LLM
+API key is likely missing. Unlike Modal (which injects keys automatically), Daytona requires you to
+add them as global secrets:
+
+1. Go to **Settings > Secrets** in the web app
+2. Select **All Repositories (Global)** from the scope dropdown
+3. Add the key for your chosen provider (e.g., `ANTHROPIC_API_KEY` for Claude models)
+4. Click **Save**
+
+See [Secrets Management](SECRETS.md) for more on global and repository secrets.
+
+### Vercel provider error when using `web_platform = "cloudflare"`
+
+The Vercel Terraform provider validates its API token on initialization, even when no Vercel
+resources are created. If you set `vercel_api_token = ""` in your `terraform.tfvars`, the provider
+will reject it. **Fix**: Remove the `vercel_api_token` and `vercel_team_id` lines from your
+`terraform.tfvars` entirely — the built-in defaults (`"unused"`) satisfy the provider's non-empty
+validation. This is a known Terraform limitation (providers validate credentials on init regardless
+of whether any resources use them).
 
 ### Durable Objects / Service Binding errors
 
@@ -796,6 +876,42 @@ This occurs on first deployment. Follow the two-phase deployment process:
 - Rotate secrets periodically using `terraform apply` after updating `terraform.tfvars`
 - Review the [Security Model](../README.md#security-model-single-tenant-only) - this system is
   designed for single-tenant deployment
+
+---
+
+## Customizing the App Name and Icon (Optional)
+
+Open-Inspect can be whitelabeled by overriding the brand name and logo. Both values are optional and
+default to the built-in `Open-Inspect` brand.
+
+Add these to your `terraform.tfvars`:
+
+```hcl
+# Display name shown in:
+#   - Web tab title, sign-in page, landing hero
+#   - Slack App Home settings page
+#   - Linear OAuth success page and completion comments
+#   - PR body footer ("Created with [<app_name>](<session-url>)")
+#   - Outbound HTTP User-Agent headers (GitHub, GitLab API)
+app_name = "Acme Bot"
+
+# Optional short label for the sidebar header. Set this when app_name is too
+# wide for the sidebar.
+app_short_name = "Acme"
+
+# Optional URL to a custom logo image (SVG/PNG). When set, replaces the
+# built-in icon in the command menu and browser favicon.
+# Use an absolute URL or a root-relative path served from packages/web/public/.
+app_icon_url = "/branding/logo.svg"   # or "https://cdn.example.com/logo.svg"
+```
+
+After changing any of these values, run `terraform apply` and (for Vercel) redeploy the web app so
+the new build picks up the `NEXT_PUBLIC_APP_NAME`, `NEXT_PUBLIC_APP_SHORT_NAME`, and
+`NEXT_PUBLIC_APP_ICON_URL` env vars (Cloudflare's web deploy is rebuilt automatically by Terraform).
+
+> **Note**: `NEXT_PUBLIC_*` vars are inlined into the client bundle at build time, so changes
+> require a fresh web build. The bot/control-plane workers read `APP_NAME` at request time, so they
+> pick up the new value immediately after `terraform apply`.
 
 ---
 

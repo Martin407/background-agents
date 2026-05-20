@@ -11,6 +11,9 @@ export interface Env {
   /** Deployment name for logging/identification. */
   DEPLOYMENT_NAME: string;
 
+  /** Display name shown in user-visible bot messages and HTTP User-Agent headers. */
+  APP_NAME?: string;
+
   /** Default model ID for new sessions. */
   DEFAULT_MODEL: string;
 
@@ -53,7 +56,7 @@ export interface PullRequestOpenedPayload {
     draft: boolean;
   };
   repository: { owner: { login: string }; name: string; private: boolean };
-  sender: { login: string };
+  sender: { login: string; id: number; avatar_url: string };
 }
 
 export interface ReviewRequestedPayload {
@@ -68,7 +71,7 @@ export interface ReviewRequestedPayload {
   };
   requested_reviewer?: { login: string };
   repository: { owner: { login: string }; name: string; private: boolean };
-  sender: { login: string };
+  sender: { login: string; id: number; avatar_url: string };
 }
 
 export interface IssueCommentPayload {
@@ -84,7 +87,7 @@ export interface IssueCommentPayload {
     user: { login: string };
   };
   repository: { owner: { login: string }; name: string; private: boolean };
-  sender: { login: string };
+  sender: { login: string; id: number; avatar_url: string };
 }
 
 export interface ReviewCommentPayload {
@@ -104,5 +107,5 @@ export interface ReviewCommentPayload {
     user: { login: string };
   };
   repository: { owner: { login: string }; name: string; private: boolean };
-  sender: { login: string };
+  sender: { login: string; id: number; avatar_url: string };
 }

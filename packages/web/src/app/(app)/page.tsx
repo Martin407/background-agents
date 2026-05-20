@@ -6,9 +6,12 @@ import { mutate } from "swr";
 import { useState, useEffect, useRef, useCallback } from "react";
 import Link from "next/link";
 import { useSidebarContext } from "@/components/sidebar-layout";
+import { Button } from "@/components/ui/button";
+import { ErrorBanner } from "@/components/ui/error-banner";
 import { formatModelNameLower } from "@/lib/format";
 import { SHORTCUT_LABELS } from "@/lib/keyboard-shortcuts";
 import { SIDEBAR_SESSIONS_KEY } from "@/lib/session-list";
+import { APP_NAME } from "@/lib/site-config";
 import {
   DEFAULT_MODEL,
   getDefaultReasoningEffort,
@@ -354,14 +357,15 @@ function HomeContent({
       {!isOpen && (
         <header className="border-b border-border-muted flex-shrink-0">
           <div className="px-4 py-3">
-            <button
+            <Button
+              variant="ghost"
+              size="icon"
               onClick={toggle}
-              className="p-1.5 text-muted-foreground hover:text-foreground hover:bg-muted transition"
               title={`Open sidebar (${SHORTCUT_LABELS.TOGGLE_SIDEBAR})`}
               aria-label={`Open sidebar (${SHORTCUT_LABELS.TOGGLE_SIDEBAR})`}
             >
               <SidebarIcon className="w-4 h-4" />
-            </button>
+            </Button>
           </div>
         </header>
       )}
@@ -370,7 +374,7 @@ function HomeContent({
         <div className="w-full max-w-2xl">
           {/* Welcome text */}
           <div className="text-center mb-8">
-            <h1 className="text-3xl font-semibold text-foreground mb-2">Welcome to Open-Inspect</h1>
+            <h1 className="text-3xl font-semibold text-foreground mb-2">Welcome to {APP_NAME}</h1>
             {isAuthenticated ? (
               <p className="text-muted-foreground">
                 Ask a question or describe what you want to build
@@ -383,11 +387,7 @@ function HomeContent({
           {/* Input box - only show when authenticated */}
           {isAuthenticated && (
             <form onSubmit={handleSubmit}>
-              {error && (
-                <div className="mb-4 bg-red-50 dark:bg-red-900/20 text-red-600 dark:text-red-400 px-4 py-3 border border-red-200 dark:border-red-800 text-sm">
-                  {error}
-                </div>
-              )}
+              {error && <ErrorBanner className="mb-4">{error}</ErrorBanner>}
 
               <div className="border border-border bg-input">
                 {/* Text input area */}

@@ -74,6 +74,7 @@ export function GitHubIntegrationSettings() {
   const settings = globalData?.settings;
   const repoOverrides = repoSettingsData?.repos ?? [];
   const availableRepos = reposData?.repos ?? [];
+  const defaultAutoReviewOnOpen = settings?.defaults?.autoReviewOnOpen ?? true;
 
   return (
     <div>
@@ -91,7 +92,7 @@ export function GitHubIntegrationSettings() {
             Repository access is available. You can limit the bot to selected repositories below.
           </p>
         ) : (
-          <p className="text-sm text-amber-700 bg-amber-50 border border-amber-200 px-4 py-3 rounded-sm">
+          <p className="text-sm text-warning bg-warning-muted border border-warning/20 px-4 py-3 rounded-sm">
             GitHub App is not configured or has no accessible repositories. Repository filtering is
             currently unavailable.
           </p>
@@ -108,6 +109,7 @@ export function GitHubIntegrationSettings() {
           overrides={repoOverrides}
           availableRepos={availableRepos}
           enabledModelOptions={enabledModelOptions}
+          defaultAutoReviewOnOpen={defaultAutoReviewOnOpen}
         />
       </Section>
     </div>
@@ -339,7 +341,7 @@ function GlobalSettingsSection({
             )}
 
             {enabledRepos.length === 0 && availableRepos.length > 0 && (
-              <p className="text-xs text-amber-700 mt-1">
+              <p className="text-xs text-warning mt-1">
                 No repositories selected. The bot will not respond to webhooks.
               </p>
             )}
@@ -420,7 +422,7 @@ function GlobalSettingsSection({
             )}
 
             {allowedTriggerUsers.length === 0 && (
-              <p className="text-xs text-amber-700 mt-1">
+              <p className="text-xs text-warning mt-1">
                 No users configured. The bot will not respond to any manual triggers (such as
                 @mentions or review requests).
               </p>
@@ -506,10 +508,12 @@ function RepoOverridesSection({
   overrides,
   availableRepos,
   enabledModelOptions,
+  defaultAutoReviewOnOpen,
 }: {
   overrides: RepoSettingsEntry[];
   availableRepos: EnrichedRepository[];
   enabledModelOptions: { category: string; models: { id: string; name: string }[] }[];
+  defaultAutoReviewOnOpen: boolean;
 }) {
   const [addingRepo, setAddingRepo] = useState("");
 
@@ -551,6 +555,7 @@ function RepoOverridesSection({
               key={entry.repo}
               entry={entry}
               enabledModelOptions={enabledModelOptions}
+              defaultAutoReviewOnOpen={defaultAutoReviewOnOpen}
             />
           ))}
         </div>
@@ -584,9 +589,11 @@ function RepoOverridesSection({
 function RepoOverrideRow({
   entry,
   enabledModelOptions,
+  defaultAutoReviewOnOpen,
 }: {
   entry: RepoSettingsEntry;
   enabledModelOptions: { category: string; models: { id: string; name: string }[] }[];
+  defaultAutoReviewOnOpen: boolean;
 }) {
   const [model, setModel] = useState(entry.settings.model ?? "");
   const [effort, setEffort] = useState(entry.settings.reasoningEffort ?? "");
@@ -608,6 +615,12 @@ function RepoOverrideRow({
   const [commentActionInstructions, setCommentActionInstructions] = useState(
     entry.settings.commentActionInstructions ?? ""
   );
+  const [autoReviewMode, setAutoReviewMode] = useState<"global" | "override">(
+    entry.settings.autoReviewOnOpen !== undefined ? "override" : "global"
+  );
+  const [autoReviewOnOpen, setAutoReviewOnOpen] = useState(
+    entry.settings.autoReviewOnOpen ?? defaultAutoReviewOnOpen
+  );
   const [newUsername, setNewUsername] = useState("");
   const [saving, setSaving] = useState(false);
   const [dirty, setDirty] = useState(false);
@@ -623,6 +636,14 @@ function RepoOverrideRow({
     }
   };
 
+  const handleAutoReviewModeChange = (newMode: "global" | "override") => {
+    setAutoReviewMode(newMode);
+    if (newMode === "override" && entry.settings.autoReviewOnOpen === undefined) {
+      setAutoReviewOnOpen(defaultAutoReviewOnOpen);
+    }
+    setDirty(true);
+  };
+
   const handleSave = async () => {
     setSaving(true);
 
@@ -634,6 +655,7 @@ function RepoOverrideRow({
     if (codeReviewMode === "override") settings.codeReviewInstructions = codeReviewInstructions;
     if (commentActionMode === "override")
       settings.commentActionInstructions = commentActionInstructions;
+    if (autoReviewMode === "override") settings.autoReviewOnOpen = autoReviewOnOpen;
 
     try {
       const res = await fetch(`/api/integration-settings/github/repos/${owner}/${name}`, {
@@ -742,6 +764,33 @@ function RepoOverrideRow({
       </div>
 
       <div>
+        <p className="text-xs font-medium text-muted-foreground mb-1">Auto-review new PRs</p>
+        <div className="flex items-center gap-2 mb-1">
+          <Select value={autoReviewMode} onValueChange={handleAutoReviewModeChange}>
+            <SelectTrigger density="compact" className="w-48">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="global">Use global default</SelectItem>
+              <SelectItem value="override">Override for this repo</SelectItem>
+            </SelectContent>
+          </Select>
+          {autoReviewMode === "override" && (
+            <label className="flex items-center gap-2 text-xs text-foreground">
+              <Switch
+                checked={autoReviewOnOpen}
+                onCheckedChange={(checked) => {
+                  setAutoReviewOnOpen(checked);
+                  setDirty(true);
+                }}
+              />
+              <span>{autoReviewOnOpen ? "Enabled" : "Disabled"}</span>
+            </label>
+          )}
+        </div>
+      </div>
+
+      <div>
         <p className="text-xs font-medium text-muted-foreground mb-1">Allowed Trigger Users</p>
         <div className="flex items-center gap-2 mb-1">
           <Select
@@ -806,7 +855,7 @@ function RepoOverrideRow({
             )}
 
             {allowedTriggerUsers.length === 0 && (
-              <p className="text-xs text-amber-700">
+              <p className="text-xs text-warning">
                 No users configured. The bot will not respond to any manual triggers for this repo.
               </p>
             )}
@@ -908,8 +957,8 @@ function Section({
 function Message({ tone, text }: { tone: "error" | "success"; text: string }) {
   const classes =
     tone === "error"
-      ? "mb-4 bg-red-50 text-red-700 px-4 py-3 border border-red-200 text-sm rounded-sm"
-      : "mb-4 bg-green-50 text-green-700 px-4 py-3 border border-green-200 text-sm rounded-sm";
+      ? "mb-4 bg-destructive-muted text-destructive px-4 py-3 border border-destructive-border text-sm rounded-sm"
+      : "mb-4 bg-success-muted text-success px-4 py-3 border border-success/20 text-sm rounded-sm";
 
   return (
     <div className={classes} aria-live="polite">

@@ -2,7 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
-import { describeCron } from "@open-inspect/shared";
+import { describeCron, GITHUB_WEBHOOK_EVENT_CATALOG } from "@open-inspect/shared";
 import type { Automation } from "@open-inspect/shared";
 import { AutomationStatusBadge } from "@/components/automations/automation-status-badge";
 import { Button } from "@/components/ui/button";
@@ -16,6 +16,13 @@ interface AutomationsListProps {
   onTrigger: (id: string) => void;
   onDelete: (id: string) => void;
 }
+
+const GITHUB_EVENT_LABELS: Record<string, string> = Object.fromEntries(
+  GITHUB_WEBHOOK_EVENT_CATALOG.map(({ event, action, shortLabel }) => [
+    `${event}.${action}`,
+    shortLabel,
+  ])
+);
 
 function describeTrigger(automation: Automation): string {
   if (automation.triggerType === "schedule" && automation.scheduleCron) {
@@ -36,12 +43,8 @@ function describeTrigger(automation: Automation): string {
       "issue.created": "new error",
       "issue.regression": "error regression",
       "metric_alert.critical": "metric alert",
-      "pull_request.opened": "PR opened",
-      "pull_request.synchronize": "PR updated",
-      "issues.opened": "issue opened",
-      "issue_comment.created": "comment created",
-      "check_suite.completed": "CI completed",
       "webhook.received": "webhook received",
+      ...GITHUB_EVENT_LABELS,
     };
     const eventLabel = EVENT_LABELS[automation.eventType] || automation.eventType;
     return `${label}: ${eventLabel}`;
@@ -61,7 +64,7 @@ export function AutomationsList({
 
   if (automations.length === 0) {
     return (
-      <div className="border border-border-muted rounded-md bg-background p-8 text-center">
+      <div className="border border-border-muted rounded-md bg-card p-8 text-center">
         <p className="text-muted-foreground">No automations yet.</p>
         <p className="text-sm text-muted-foreground mt-1">
           Create one to run tasks on a schedule or in response to events.
@@ -71,7 +74,7 @@ export function AutomationsList({
   }
 
   return (
-    <div className="border border-border-muted rounded-md bg-background divide-y divide-border-muted">
+    <div className="border border-border-muted rounded-md bg-card divide-y divide-border-muted">
       {automations.map((automation) => (
         <div key={automation.id} className="px-4 py-4">
           {/* Header: Name + badge | Actions */}

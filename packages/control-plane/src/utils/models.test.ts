@@ -24,6 +24,7 @@ describe("model utilities", () => {
       expect(isValidModel("anthropic/claude-sonnet-4-5")).toBe(true);
       expect(isValidModel("anthropic/claude-opus-4-5")).toBe(true);
       expect(isValidModel("anthropic/claude-opus-4-6")).toBe(true);
+      expect(isValidModel("anthropic/claude-opus-4-7")).toBe(true);
     });
 
     it("accepts bare Claude model names via normalization", () => {
@@ -31,11 +32,13 @@ describe("model utilities", () => {
       expect(isValidModel("claude-sonnet-4-5")).toBe(true);
       expect(isValidModel("claude-opus-4-5")).toBe(true);
       expect(isValidModel("claude-opus-4-6")).toBe(true);
+      expect(isValidModel("claude-opus-4-7")).toBe(true);
     });
 
     it("returns true for OpenAI models", () => {
       expect(isValidModel("openai/gpt-5.2")).toBe(true);
       expect(isValidModel("openai/gpt-5.4")).toBe(true);
+      expect(isValidModel("openai/gpt-5.5")).toBe(true);
       expect(isValidModel("openai/gpt-5.2-codex")).toBe(true);
       expect(isValidModel("openai/gpt-5.3-codex")).toBe(true);
       expect(isValidModel("openai/gpt-5.3-codex-spark")).toBe(true);
@@ -43,6 +46,7 @@ describe("model utilities", () => {
 
     it("accepts bare GPT model names via normalization", () => {
       expect(isValidModel("gpt-5.4")).toBe(true);
+      expect(isValidModel("gpt-5.5")).toBe(true);
       expect(isValidModel("gpt-5.2")).toBe(true);
       expect(isValidModel("gpt-5.2-codex")).toBe(true);
       expect(isValidModel("gpt-5.3-codex")).toBe(true);
@@ -108,6 +112,11 @@ describe("model utilities", () => {
         model: "gpt-5.4",
       });
 
+      expect(extractProviderAndModel("openai/gpt-5.5")).toEqual({
+        provider: "openai",
+        model: "gpt-5.5",
+      });
+
       expect(extractProviderAndModel("openai/gpt-5.2-codex")).toEqual({
         provider: "openai",
         model: "gpt-5.2-codex",
@@ -144,6 +153,11 @@ describe("model utilities", () => {
         provider: "anthropic",
         model: "claude-opus-4-6",
       });
+
+      expect(extractProviderAndModel("anthropic/claude-opus-4-7")).toEqual({
+        provider: "anthropic",
+        model: "claude-opus-4-7",
+      });
     });
 
     it("normalizes bare Claude models before extraction", () => {
@@ -165,6 +179,11 @@ describe("model utilities", () => {
       expect(extractProviderAndModel("claude-opus-4-6")).toEqual({
         provider: "anthropic",
         model: "claude-opus-4-6",
+      });
+
+      expect(extractProviderAndModel("claude-opus-4-7")).toEqual({
+        provider: "anthropic",
+        model: "claude-opus-4-7",
       });
     });
 
@@ -199,6 +218,7 @@ describe("model utilities", () => {
       );
       expect(getValidModelOrDefault("anthropic/claude-opus-4-5")).toBe("anthropic/claude-opus-4-5");
       expect(getValidModelOrDefault("anthropic/claude-opus-4-6")).toBe("anthropic/claude-opus-4-6");
+      expect(getValidModelOrDefault("anthropic/claude-opus-4-7")).toBe("anthropic/claude-opus-4-7");
     });
 
     it("normalizes bare Claude model names to prefixed format", () => {
@@ -206,10 +226,12 @@ describe("model utilities", () => {
       expect(getValidModelOrDefault("claude-sonnet-4-5")).toBe("anthropic/claude-sonnet-4-5");
       expect(getValidModelOrDefault("claude-opus-4-5")).toBe("anthropic/claude-opus-4-5");
       expect(getValidModelOrDefault("claude-opus-4-6")).toBe("anthropic/claude-opus-4-6");
+      expect(getValidModelOrDefault("claude-opus-4-7")).toBe("anthropic/claude-opus-4-7");
     });
 
     it("normalizes bare GPT model names to prefixed format", () => {
       expect(getValidModelOrDefault("gpt-5.4")).toBe("openai/gpt-5.4");
+      expect(getValidModelOrDefault("gpt-5.5")).toBe("openai/gpt-5.5");
       expect(getValidModelOrDefault("gpt-5.2")).toBe("openai/gpt-5.2");
       expect(getValidModelOrDefault("gpt-5.2-codex")).toBe("openai/gpt-5.2-codex");
     });
@@ -238,6 +260,7 @@ describe("model utilities", () => {
       expect(supportsReasoning("anthropic/claude-sonnet-4-5")).toBe(true);
       expect(supportsReasoning("anthropic/claude-opus-4-5")).toBe(true);
       expect(supportsReasoning("anthropic/claude-opus-4-6")).toBe(true);
+      expect(supportsReasoning("anthropic/claude-opus-4-7")).toBe(true);
     });
 
     it("supports bare Claude model names via normalization", () => {
@@ -245,11 +268,13 @@ describe("model utilities", () => {
       expect(supportsReasoning("claude-sonnet-4-5")).toBe(true);
       expect(supportsReasoning("claude-opus-4-5")).toBe(true);
       expect(supportsReasoning("claude-opus-4-6")).toBe(true);
+      expect(supportsReasoning("claude-opus-4-7")).toBe(true);
     });
 
     it("returns true for OpenAI models with reasoning config", () => {
       expect(supportsReasoning("openai/gpt-5.2")).toBe(true);
       expect(supportsReasoning("openai/gpt-5.4")).toBe(true);
+      expect(supportsReasoning("openai/gpt-5.5")).toBe(true);
       expect(supportsReasoning("openai/gpt-5.2-codex")).toBe(true);
       expect(supportsReasoning("openai/gpt-5.3-codex")).toBe(true);
       expect(supportsReasoning("openai/gpt-5.3-codex-spark")).toBe(true);
@@ -268,6 +293,7 @@ describe("model utilities", () => {
       expect(getDefaultReasoningEffort("anthropic/claude-sonnet-4-5")).toBe("max");
       expect(getDefaultReasoningEffort("anthropic/claude-opus-4-5")).toBe("max");
       expect(getDefaultReasoningEffort("anthropic/claude-opus-4-6")).toBe("high");
+      expect(getDefaultReasoningEffort("anthropic/claude-opus-4-7")).toBe("high");
     });
 
     it("returns expected defaults for bare Claude model names via normalization", () => {
@@ -275,6 +301,7 @@ describe("model utilities", () => {
       expect(getDefaultReasoningEffort("claude-sonnet-4-5")).toBe("max");
       expect(getDefaultReasoningEffort("claude-opus-4-5")).toBe("max");
       expect(getDefaultReasoningEffort("claude-opus-4-6")).toBe("high");
+      expect(getDefaultReasoningEffort("claude-opus-4-7")).toBe("high");
     });
 
     it("returns high for OpenAI codex models", () => {
@@ -283,9 +310,10 @@ describe("model utilities", () => {
       expect(getDefaultReasoningEffort("openai/gpt-5.3-codex-spark")).toBe("high");
     });
 
-    it("returns undefined for GPT 5.2 and GPT 5.4 (no default)", () => {
+    it("returns undefined for GPT 5.2, GPT 5.4, and GPT 5.5", () => {
       expect(getDefaultReasoningEffort("openai/gpt-5.2")).toBeUndefined();
       expect(getDefaultReasoningEffort("openai/gpt-5.4")).toBeUndefined();
+      expect(getDefaultReasoningEffort("openai/gpt-5.5")).toBeUndefined();
     });
 
     it("returns undefined for invalid models", () => {
@@ -304,6 +332,12 @@ describe("model utilities", () => {
 
       const opus46Config = getReasoningConfig("anthropic/claude-opus-4-6");
       expect(opus46Config).toEqual({
+        efforts: ["low", "medium", "high", "max"],
+        default: "high",
+      });
+
+      const opus47Config = getReasoningConfig("anthropic/claude-opus-4-7");
+      expect(opus47Config).toEqual({
         efforts: ["low", "medium", "high", "max"],
         default: "high",
       });
@@ -341,6 +375,14 @@ describe("model utilities", () => {
       });
     });
 
+    it("returns config for GPT 5.5 with none effort", () => {
+      const config = getReasoningConfig("openai/gpt-5.5");
+      expect(config).toEqual({
+        efforts: ["none", "low", "medium", "high", "xhigh"],
+        default: undefined,
+      });
+    });
+
     it("returns undefined for invalid models", () => {
       expect(getReasoningConfig("invalid")).toBeUndefined();
     });
@@ -367,6 +409,14 @@ describe("model utilities", () => {
       expect(isValidReasoningEffort("anthropic/claude-opus-4-6", "xhigh")).toBe(false);
     });
 
+    it("supports adaptive effort levels for Opus 4.7", () => {
+      expect(isValidReasoningEffort("anthropic/claude-opus-4-7", "low")).toBe(true);
+      expect(isValidReasoningEffort("anthropic/claude-opus-4-7", "medium")).toBe(true);
+      expect(isValidReasoningEffort("anthropic/claude-opus-4-7", "high")).toBe(true);
+      expect(isValidReasoningEffort("anthropic/claude-opus-4-7", "max")).toBe(true);
+      expect(isValidReasoningEffort("anthropic/claude-opus-4-7", "xhigh")).toBe(false);
+    });
+
     it("accepts bare Claude model names via normalization", () => {
       expect(isValidReasoningEffort("claude-sonnet-4-5", "high")).toBe(true);
       expect(isValidReasoningEffort("claude-sonnet-4-5", "max")).toBe(true);
@@ -386,11 +436,13 @@ describe("model utilities", () => {
       expect(isValidReasoningEffort("openai/gpt-5.3-codex-spark", "max")).toBe(false);
       expect(isValidReasoningEffort("openai/gpt-5.2", "max")).toBe(false);
       expect(isValidReasoningEffort("openai/gpt-5.4", "max")).toBe(false);
+      expect(isValidReasoningEffort("openai/gpt-5.5", "max")).toBe(false);
     });
 
     it("returns true for none on GPT 5.x baseline models", () => {
       expect(isValidReasoningEffort("openai/gpt-5.2", "none")).toBe(true);
       expect(isValidReasoningEffort("openai/gpt-5.4", "none")).toBe(true);
+      expect(isValidReasoningEffort("openai/gpt-5.5", "none")).toBe(true);
       expect(isValidReasoningEffort("openai/gpt-5.2-codex", "none")).toBe(false);
     });
 
@@ -410,6 +462,7 @@ describe("model utilities", () => {
       expect(normalizeModelId("claude-sonnet-4-5")).toBe("anthropic/claude-sonnet-4-5");
       expect(normalizeModelId("claude-opus-4-5")).toBe("anthropic/claude-opus-4-5");
       expect(normalizeModelId("claude-opus-4-6")).toBe("anthropic/claude-opus-4-6");
+      expect(normalizeModelId("claude-opus-4-7")).toBe("anthropic/claude-opus-4-7");
     });
 
     it("passes through already-prefixed models unchanged", () => {
@@ -417,11 +470,13 @@ describe("model utilities", () => {
       expect(normalizeModelId("anthropic/claude-sonnet-4-5")).toBe("anthropic/claude-sonnet-4-5");
       expect(normalizeModelId("anthropic/claude-opus-4-5")).toBe("anthropic/claude-opus-4-5");
       expect(normalizeModelId("anthropic/claude-opus-4-6")).toBe("anthropic/claude-opus-4-6");
+      expect(normalizeModelId("anthropic/claude-opus-4-7")).toBe("anthropic/claude-opus-4-7");
     });
 
     it("passes through OpenAI models unchanged", () => {
       expect(normalizeModelId("openai/gpt-5.2")).toBe("openai/gpt-5.2");
       expect(normalizeModelId("openai/gpt-5.4")).toBe("openai/gpt-5.4");
+      expect(normalizeModelId("openai/gpt-5.5")).toBe("openai/gpt-5.5");
       expect(normalizeModelId("openai/gpt-5.2-codex")).toBe("openai/gpt-5.2-codex");
       expect(normalizeModelId("openai/gpt-5.3-codex")).toBe("openai/gpt-5.3-codex");
       expect(normalizeModelId("openai/gpt-5.3-codex-spark")).toBe("openai/gpt-5.3-codex-spark");
@@ -429,6 +484,7 @@ describe("model utilities", () => {
 
     it("adds openai/ prefix to bare GPT models", () => {
       expect(normalizeModelId("gpt-5.4")).toBe("openai/gpt-5.4");
+      expect(normalizeModelId("gpt-5.5")).toBe("openai/gpt-5.5");
       expect(normalizeModelId("gpt-5.2")).toBe("openai/gpt-5.2");
       expect(normalizeModelId("gpt-5.2-codex")).toBe("openai/gpt-5.2-codex");
     });

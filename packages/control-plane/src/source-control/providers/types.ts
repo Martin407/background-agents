@@ -3,6 +3,7 @@
  */
 
 import type { GitHubAppConfig } from "../../auth/github-app";
+import type { CacheStore } from "@open-inspect/shared";
 
 /**
  * Configuration for GitHubSourceControlProvider.
@@ -10,8 +11,10 @@ import type { GitHubAppConfig } from "../../auth/github-app";
 export interface GitHubProviderConfig {
   /** GitHub App configuration (required for push auth) */
   appConfig?: GitHubAppConfig;
-  /** KV namespace for caching installation tokens */
-  kvCache?: KVNamespace;
+  /** Cache store for caching installation tokens */
+  cacheStore?: CacheStore;
+  /** User-Agent value sent on outbound GitHub API requests */
+  userAgent?: string;
 }
 
 /**
@@ -22,4 +25,6 @@ export interface GitLabProviderConfig {
   accessToken: string;
   /** GitLab group namespace to scope repository listing (optional) */
   namespace?: string;
+  /** User-Agent value sent on outbound GitLab API requests */
+  userAgent?: string;
 }

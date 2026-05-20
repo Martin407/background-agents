@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect, useMemo } from "react";
 import {
   DEFAULT_MODEL,
   getReasoningConfig,
@@ -49,6 +49,11 @@ const COMMON_TIMEZONES = [
 const COMMON_SET = new Set(COMMON_TIMEZONES);
 const ALL_TIMEZONES = Intl.supportedValuesOf("timeZone");
 const DEFAULT_REASONING_VALUE = "__default__";
+
+// Keep in sync with MAX_INSTRUCTIONS_LENGTH in
+// packages/control-plane/src/routes/automations.ts.
+const INSTRUCTIONS_MAX_LENGTH = 15000;
+const INSTRUCTIONS_WARNING_THRESHOLD = Math.floor(INSTRUCTIONS_MAX_LENGTH * 0.9);
 
 const toOption = (tz: string) => ({ value: tz, label: tz.replace(/_/g, " ") });
 
@@ -108,6 +113,7 @@ export function AutomationForm({ mode, initialValues, onSubmit, submitting }: Au
     initialValues?.triggerType ?? "schedule"
   );
   const [eventType, setEventType] = useState(initialValues?.eventType ?? "");
+  const [eventTypeError, setEventTypeError] = useState("");
   const [conditions, setConditions] = useState<TriggerCondition[]>(
     initialValues?.triggerConfig?.conditions ?? []
   );
@@ -116,11 +122,28 @@ export function AutomationForm({ mode, initialValues, onSubmit, submitting }: Au
   const isSchedule = triggerType === "schedule";
   const isScheduleValid = !isSchedule || isValidCron(scheduleCron);
 
-  // Get event types for the selected trigger type
-  const triggerSourceDef = triggerSources.find(
-    (s) => TRIGGER_TYPE_TO_SOURCE[triggerType] === s.source
+  const triggerMetadata = useMemo(
+    () => triggerSources.find((sourceDef) => sourceDef.triggerType === triggerType),
+    [triggerType]
   );
-  const eventTypes = triggerSourceDef?.eventTypes ?? [];
+  const eventTypes = useMemo(() => triggerMetadata?.eventTypes ?? [], [triggerMetadata]);
+  const showEventTypeSelector = Boolean(
+    triggerMetadata?.supportsEventTypes && eventTypes.length > 0
+  );
+  const eventTypePlaceholder = triggerMetadata?.eventTypePlaceholder || "Select event type...";
+
+  // Reset eventType when it becomes invalid for the current trigger type
+  useEffect(() => {
+    if (!eventType) return;
+    const stillValid = eventTypes.some((et) => et.eventType === eventType);
+    if (!stillValid) setEventType("");
+  }, [eventType, eventTypes]);
+
+  useEffect(() => {
+    if (!showEventTypeSelector || eventType) {
+      setEventTypeError("");
+    }
+  }, [showEventTypeSelector, eventType]);
 
   const handleRepoChange = useCallback(
     (repoFullName: string) => {
@@ -135,6 +158,10 @@ export function AutomationForm({ mode, initialValues, onSubmit, submitting }: Au
     e.preventDefault();
     if (!name.trim() || !selectedRepo || !instructions.trim() || !isScheduleValid) return;
     if (triggerType === "sentry" && mode === "create" && !sentryClientSecret.trim()) return;
+    if (showEventTypeSelector && !eventType) {
+      setEventTypeError("Event type is required.");
+      return;
+    }
 
     const values: AutomationFormValues = {
       name: name.trim(),
@@ -181,12 +208,12 @@ export function AutomationForm({ mode, initialValues, onSubmit, submitting }: Au
       {/* Trigger Type */}
       {mode === "create" ? (
         <div>
-          <label className="block text-sm font-medium text-foreground mb-2">Trigger Type</label>
+          <label className="block text-sm font-medium text-foreground mb-1.5">Trigger Type</label>
           <TriggerTypeSelector value={triggerType} onChange={setTriggerType} />
         </div>
       ) : (
         <div>
-          <label className="block text-sm font-medium text-foreground mb-1">Trigger Type</label>
+          <label className="block text-sm font-medium text-foreground mb-1.5">Trigger Type</label>
           <div className="text-sm text-muted-foreground px-3 py-2 border border-border-muted rounded-md bg-muted/30">
             {{
               schedule: "Schedule",
@@ -202,7 +229,7 @@ export function AutomationForm({ mode, initialValues, onSubmit, submitting }: Au
 
       {/* Name */}
       <div>
-        <label className="block text-sm font-medium text-foreground mb-1">Name</label>
+        <label className="block text-sm font-medium text-foreground mb-1.5">Name</label>
         <Input
           type="text"
           value={name}
@@ -215,7 +242,7 @@ export function AutomationForm({ mode, initialValues, onSubmit, submitting }: Au
 
       {/* Repository */}
       <div>
-        <label className="block text-sm font-medium text-foreground mb-1">Repository</label>
+        <label className="block text-sm font-medium text-foreground mb-1.5">Repository</label>
         <Combobox
           value={selectedRepo}
           onChange={handleRepoChange}
@@ -245,7 +272,7 @@ export function AutomationForm({ mode, initialValues, onSubmit, submitting }: Au
 
       {/* Branch */}
       <div>
-        <label className="block text-sm font-medium text-foreground mb-1">Branch</label>
+        <label className="block text-sm font-medium text-foreground mb-1.5">Branch</label>
         <Combobox
           value={baseBranch}
           onChange={setBaseBranch}
@@ -270,7 +297,7 @@ export function AutomationForm({ mode, initialValues, onSubmit, submitting }: Au
 
       {/* Model */}
       <div>
-        <label className="block text-sm font-medium text-foreground mb-1">Model</label>
+        <label className="block text-sm font-medium text-foreground mb-1.5">Model</label>
         <Combobox
           value={model}
           onChange={(nextModel) => {
@@ -299,7 +326,7 @@ export function AutomationForm({ mode, initialValues, onSubmit, submitting }: Au
       </div>
 
       <div>
-        <label className="block text-sm font-medium text-foreground mb-1">Reasoning Effort</label>
+        <label className="block text-sm font-medium text-foreground mb-1.5">Reasoning Effort</label>
         <Select
           value={reasoningConfig ? reasoningEffort || DEFAULT_REASONING_VALUE : ""}
           onValueChange={(value) =>
@@ -327,11 +354,11 @@ export function AutomationForm({ mode, initialValues, onSubmit, submitting }: Au
       {isSchedule && (
         <>
           <div>
-            <label className="block text-sm font-medium text-foreground mb-1">Schedule</label>
+            <label className="block text-sm font-medium text-foreground mb-1.5">Schedule</label>
             <CronPicker value={scheduleCron} onChange={setScheduleCron} timezone={scheduleTz} />
           </div>
           <div>
-            <label className="block text-sm font-medium text-foreground mb-1">Timezone</label>
+            <label className="block text-sm font-medium text-foreground mb-1.5">Timezone</label>
             <Combobox
               value={scheduleTz}
               onChange={setScheduleTz}
@@ -353,13 +380,19 @@ export function AutomationForm({ mode, initialValues, onSubmit, submitting }: Au
         </>
       )}
 
-      {/* Event type selector (for Sentry) */}
-      {triggerType === "sentry" && eventTypes.length > 0 && (
+      {/* Event type selector (for trigger sources with event type support) */}
+      {showEventTypeSelector && (
         <div>
-          <label className="block text-sm font-medium text-foreground mb-1">Event Type</label>
-          <Select value={eventType} onValueChange={setEventType}>
+          <label className="block text-sm font-medium text-foreground mb-1.5">Event Type</label>
+          <Select
+            value={eventType}
+            onValueChange={(value) => {
+              setEventType(value);
+              if (eventTypeError) setEventTypeError("");
+            }}
+          >
             <SelectTrigger className="w-full">
-              <SelectValue placeholder="Select event type..." />
+              <SelectValue placeholder={eventTypePlaceholder} />
             </SelectTrigger>
             <SelectContent>
               {eventTypes.map((et) => (
@@ -370,13 +403,14 @@ export function AutomationForm({ mode, initialValues, onSubmit, submitting }: Au
               ))}
             </SelectContent>
           </Select>
+          {eventTypeError && <p className="mt-1 text-xs text-destructive">{eventTypeError}</p>}
         </div>
       )}
 
       {/* Sentry Client Secret (create mode only) */}
       {triggerType === "sentry" && mode === "create" && (
         <div>
-          <label className="block text-sm font-medium text-foreground mb-1">
+          <label className="block text-sm font-medium text-foreground mb-1.5">
             Sentry Client Secret
           </label>
           <Input
@@ -396,7 +430,7 @@ export function AutomationForm({ mode, initialValues, onSubmit, submitting }: Au
       {/* Conditions (for non-schedule types) */}
       {!isSchedule && TRIGGER_TYPE_TO_SOURCE[triggerType] && (
         <div>
-          <label className="block text-sm font-medium text-foreground mb-1">
+          <label className="block text-sm font-medium text-foreground mb-1.5">
             Conditions
             <span className="text-xs text-muted-foreground ml-1 font-normal">(optional)</span>
           </label>
@@ -410,7 +444,7 @@ export function AutomationForm({ mode, initialValues, onSubmit, submitting }: Au
 
       {/* Instructions */}
       <div>
-        <label className="block text-sm font-medium text-foreground mb-1">Instructions</label>
+        <label className="block text-sm font-medium text-foreground mb-1.5">Instructions</label>
         <Textarea
           value={instructions}
           onChange={(e) => setInstructions(e.target.value)}
@@ -419,17 +453,36 @@ export function AutomationForm({ mode, initialValues, onSubmit, submitting }: Au
               ? "Run the test suite and fix any failing tests. If all tests pass, look for TODO comments and address the most impactful one."
               : triggerType === "sentry"
                 ? "Investigate this Sentry error. Find the root cause in the codebase, then open a PR with a fix."
-                : "Process this webhook payload and take the appropriate action."
+                : triggerType === "github_event"
+                  ? "Review this pull request and provide feedback. Check for code quality issues, potential bugs, and suggest improvements."
+                  : "Process this webhook payload and take the appropriate action."
           }
-          maxLength={10000}
+          maxLength={INSTRUCTIONS_MAX_LENGTH}
           required
           rows={6}
+          aria-describedby="instructions-counter"
           className="resize-y"
         />
+        <div
+          id="instructions-counter"
+          aria-live="polite"
+          className={`mt-1 text-xs text-right ${
+            instructions.length >= INSTRUCTIONS_MAX_LENGTH
+              ? "text-destructive"
+              : instructions.length >= INSTRUCTIONS_WARNING_THRESHOLD
+                ? "text-warning"
+                : "text-muted-foreground"
+          }`}
+        >
+          {instructions.length >= INSTRUCTIONS_MAX_LENGTH ? (
+            <span>Maximum length reached. </span>
+          ) : null}
+          {instructions.length.toLocaleString()} / {INSTRUCTIONS_MAX_LENGTH.toLocaleString()}
+        </div>
       </div>
 
       {/* Submit */}
-      <div className="flex justify-end gap-3">
+      <div className="flex justify-end gap-2">
         <Button
           type="submit"
           disabled={
@@ -438,6 +491,7 @@ export function AutomationForm({ mode, initialValues, onSubmit, submitting }: Au
             !selectedRepo ||
             !instructions.trim() ||
             !isScheduleValid ||
+            (showEventTypeSelector && !eventType) ||
             (triggerType === "sentry" && mode === "create" && !sentryClientSecret.trim())
           }
         >

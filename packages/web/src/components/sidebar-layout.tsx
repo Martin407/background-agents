@@ -10,7 +10,9 @@ import { useSidebar } from "@/hooks/use-sidebar";
 import { useIsMobile } from "@/hooks/use-media-query";
 import { useGlobalShortcuts } from "@/hooks/use-global-shortcuts";
 import { SIDEBAR_SESSIONS_KEY, type SessionListResponse } from "@/lib/session-list";
+import { Button } from "@/components/ui/button";
 import { GitHubIcon } from "@/components/ui/icons";
+import { APP_NAME } from "@/lib/site-config";
 
 interface SidebarContextValue {
   isOpen: boolean;
@@ -79,7 +81,7 @@ export function SidebarLayout({ children }: SidebarLayoutProps) {
   if (status === "loading") {
     return (
       <div className="min-h-screen flex items-center justify-center">
-        <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-foreground" />
+        <div className="animate-spin rounded-full h-6 w-6 border-2 border-current border-t-transparent text-foreground" />
       </div>
     );
   }
@@ -88,17 +90,14 @@ export function SidebarLayout({ children }: SidebarLayoutProps) {
   if (!session) {
     return (
       <div className="min-h-screen flex flex-col items-center justify-center gap-8">
-        <h1 className="text-4xl font-bold text-foreground">Open-Inspect</h1>
+        <h1 className="text-4xl font-bold text-foreground">{APP_NAME}</h1>
         <p className="text-muted-foreground max-w-md text-center">
           Background coding agent for your team. Ship faster with AI-powered code changes.
         </p>
-        <button
-          onClick={() => signIn("github")}
-          className="flex items-center gap-2 bg-primary text-primary-foreground px-6 py-3 font-medium hover:opacity-90 transition"
-        >
+        <Button onClick={() => signIn("github")} className="gap-2 px-6 py-3">
           <GitHubIcon className="w-5 h-5" />
           Sign in with GitHub
-        </button>
+        </Button>
       </div>
     );
   }
@@ -109,9 +108,11 @@ export function SidebarLayout({ children }: SidebarLayoutProps) {
         {/* Mobile: overlay backdrop */}
         {isMobile && (
           <div
-            className={`fixed inset-0 z-30 bg-black/50 transition-opacity duration-200 ${
+            className={`fixed inset-0 z-30 bg-overlay transition-opacity duration-200 ${
               sidebar.isOpen ? "opacity-100" : "opacity-0 pointer-events-none"
             }`}
+            role="presentation"
+            aria-hidden="true"
             onClick={sidebar.close}
           />
         )}

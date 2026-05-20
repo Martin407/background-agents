@@ -18,6 +18,7 @@ export interface Env {
   WEB_APP_URL: string;
   DEFAULT_MODEL: string;
   CLASSIFICATION_MODEL: string;
+  APP_NAME?: string;
 
   // Secrets
   SLACK_BOT_TOKEN: string;
@@ -153,6 +154,20 @@ export interface CompletionCallback {
   sessionId: string;
   messageId: string;
   success: boolean;
+  error?: string;
+  timestamp: number;
+  signature: string;
+  context: SlackCallbackContext;
+}
+
+/**
+ * Tool-call callback payload from control-plane.
+ */
+export interface ToolCallCallback {
+  sessionId: string;
+  tool: string;
+  args: Record<string, unknown>;
+  callId: string;
   timestamp: number;
   signature: string;
   context: SlackCallbackContext;

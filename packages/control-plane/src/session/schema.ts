@@ -26,6 +26,7 @@ CREATE TABLE IF NOT EXISTS session (
   spawn_source TEXT NOT NULL DEFAULT 'user',        -- 'user' or 'agent'
   spawn_depth INTEGER NOT NULL DEFAULT 0,           -- 0 for top-level, parent.depth + 1 for children
   code_server_enabled INTEGER NOT NULL DEFAULT 0,   -- 0 = disabled, 1 = enabled (opt-in)
+  total_cost REAL NOT NULL DEFAULT 0,              -- Running session cost from step_finish events
   sandbox_settings TEXT DEFAULT NULL,               -- JSON blob of SandboxSettings (resolved at session creation)
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL
@@ -77,10 +78,10 @@ CREATE TABLE IF NOT EXISTS events (
   created_at INTEGER NOT NULL
 );
 
--- Artifacts (PRs, screenshots, preview URLs)
+-- Artifacts (PRs, screenshots, video recordings, preview URLs)
 CREATE TABLE IF NOT EXISTS artifacts (
   id TEXT PRIMARY KEY,
-  type TEXT NOT NULL,                               -- 'pr', 'screenshot', 'preview', 'branch'
+  type TEXT NOT NULL,                               -- 'pr', 'screenshot', 'video', 'preview', 'branch'
   url TEXT,
   metadata TEXT,                                    -- JSON
   created_at INTEGER NOT NULL
@@ -376,6 +377,11 @@ export const MIGRATIONS: readonly SchemaMigration[] = [
       runMigration(sql, `ALTER TABLE sandbox ADD COLUMN ttyd_url TEXT`);
       runMigration(sql, `ALTER TABLE sandbox ADD COLUMN ttyd_token TEXT`);
     },
+  },
+  {
+    id: 30,
+    description: "Add total_cost to session",
+    run: `ALTER TABLE session ADD COLUMN total_cost REAL NOT NULL DEFAULT 0`,
   },
 ];
 

@@ -75,6 +75,8 @@ export class ModalSandboxProvider implements SandboxProvider {
           timeoutSeconds: config.timeoutSeconds,
           branch: config.branch,
           codeServerEnabled: config.codeServerEnabled,
+          agentSlackNotifyEnabled: config.agentSlackNotifyEnabled,
+          mcpServers: config.mcpServers,
           sandboxSettings: config.sandboxSettings,
         },
         config.correlation
@@ -115,6 +117,8 @@ export class ModalSandboxProvider implements SandboxProvider {
           timeoutSeconds: config.timeoutSeconds ?? DEFAULT_SANDBOX_TIMEOUT_SECONDS,
           branch: config.branch,
           codeServerEnabled: config.codeServerEnabled,
+          agentSlackNotifyEnabled: config.agentSlackNotifyEnabled,
+          mcpServers: config.mcpServers,
           sandboxSettings: config.sandboxSettings,
         },
         config.correlation

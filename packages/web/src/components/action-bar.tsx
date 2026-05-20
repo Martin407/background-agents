@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import { toast } from "sonner";
+import { ArchiveSessionDialog } from "@/components/archive-session-dialog";
 import type { Artifact } from "@/types/session";
 import {
   GlobeIcon,
@@ -12,16 +13,6 @@ import {
   GitHubIcon,
 } from "@/components/ui/icons";
 import { Button } from "@/components/ui/button";
-import {
-  AlertDialog,
-  AlertDialogAction,
-  AlertDialogCancel,
-  AlertDialogContent,
-  AlertDialogDescription,
-  AlertDialogFooter,
-  AlertDialogHeader,
-  AlertDialogTitle,
-} from "@/components/ui/alert-dialog";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -50,6 +41,9 @@ export function ActionBar({
 
   const prArtifact = artifacts.find((a) => a.type === "pr");
   const previewArtifact = artifacts.find((a) => a.type === "preview");
+  const mediaCount = artifacts.filter(
+    (artifact) => artifact.type === "screenshot" || artifact.type === "video"
+  ).length;
   const previewUrl = getSafeExternalUrl(previewArtifact?.url);
   const prUrl = getSafeExternalUrl(prArtifact?.url);
 
@@ -95,7 +89,7 @@ export function ActionBar({
               <GlobeIcon className="w-4 h-4" />
               <span>View preview</span>
               {previewArtifact?.metadata?.previewStatus === "outdated" && (
-                <span className="text-xs text-yellow-600 dark:text-yellow-400">(outdated)</span>
+                <span className="text-xs text-warning">(outdated)</span>
               )}
             </a>
           </Button>
@@ -123,6 +117,12 @@ export function ActionBar({
           <span>{isArchived ? "Unarchive" : "Archive"}</span>
         </Button>
 
+        {mediaCount > 0 && (
+          <div className="inline-flex items-center rounded-md border border-border-muted px-3 text-sm text-muted-foreground">
+            Media ({mediaCount})
+          </div>
+        )}
+
         {/* More menu */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -147,21 +147,11 @@ export function ActionBar({
         </DropdownMenu>
       </div>
 
-      <AlertDialog open={showArchiveDialog} onOpenChange={setShowArchiveDialog}>
-        <AlertDialogContent>
-          <AlertDialogHeader>
-            <AlertDialogTitle>Archive session</AlertDialogTitle>
-            <AlertDialogDescription>
-              Archive this session? You can restore archived sessions from Settings &gt; Data
-              Controls.
-            </AlertDialogDescription>
-          </AlertDialogHeader>
-          <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
-            <AlertDialogAction onClick={handleConfirmArchive}>Archive</AlertDialogAction>
-          </AlertDialogFooter>
-        </AlertDialogContent>
-      </AlertDialog>
+      <ArchiveSessionDialog
+        open={showArchiveDialog}
+        onOpenChange={setShowArchiveDialog}
+        onConfirm={handleConfirmArchive}
+      />
     </>
   );
 }

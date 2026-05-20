@@ -4,8 +4,13 @@ import { useState, useCallback } from "react";
 import Link from "next/link";
 import useSWR, { mutate } from "swr";
 import { toast } from "sonner";
+import { Button } from "@/components/ui/button";
 import { buildSessionHref, type SessionItem } from "@/components/session-sidebar";
-import { SIDEBAR_SESSIONS_KEY } from "@/lib/session-list";
+import {
+  SIDEBAR_SESSIONS_KEY,
+  removeSessionFromList,
+  type SessionListResponse,
+} from "@/lib/session-list";
 import { formatRelativeTime } from "@/lib/time";
 
 const PAGE_SIZE = 20;
@@ -13,23 +18,21 @@ const ARCHIVED_SESSIONS_KEY = `/api/sessions?status=archived&limit=${PAGE_SIZE}&
 
 export function DataControlsSettings() {
   const [extraSessions, setExtraSessions] = useState<SessionItem[]>([]);
-  const [hiddenIds, setHiddenIds] = useState<Set<string>>(new Set());
   const [loadingMore, setLoadingMore] = useState(false);
   const [hasMore, setHasMore] = useState(false);
   const [offset, setOffset] = useState(0);
 
-  const { data, isLoading: loading } = useSWR<{ sessions: SessionItem[] }>(ARCHIVED_SESSIONS_KEY, {
+  const { data, isLoading: loading } = useSWR<SessionListResponse>(ARCHIVED_SESSIONS_KEY, {
     onSuccess: (data) => {
       const fetched = data.sessions || [];
       setHasMore(fetched.length === PAGE_SIZE);
       setOffset(fetched.length);
       setExtraSessions([]);
-      setHiddenIds(new Set());
     },
   });
 
   const firstPageSessions = data?.sessions ?? [];
-  const sessions = [...firstPageSessions, ...extraSessions].filter((s) => !hiddenIds.has(s.id));
+  const sessions = [...firstPageSessions, ...extraSessions];
 
   const handleLoadMore = useCallback(async () => {
     setLoadingMore(true);
@@ -50,21 +53,29 @@ export function DataControlsSettings() {
   }, [offset]);
 
   const handleUnarchive = async (sessionId: string) => {
-    // Optimistically hide from both first-page and extra sessions
-    setHiddenIds((prev) => new Set(prev).add(sessionId));
     try {
       const res = await fetch(`/api/sessions/${sessionId}/unarchive`, { method: "POST" });
-      if (res.ok) {
-        toast.success("Session unarchived");
-        mutate(SIDEBAR_SESSIONS_KEY);
-        mutate(ARCHIVED_SESSIONS_KEY);
-      } else {
+      if (!res.ok) {
         toast.error("Failed to unarchive session");
-        mutate(ARCHIVED_SESSIONS_KEY);
+        return;
       }
+      toast.success("Session unarchived");
+      await mutate<SessionListResponse>(
+        ARCHIVED_SESSIONS_KEY,
+        (current) =>
+          current
+            ? { ...current, sessions: removeSessionFromList(current.sessions, sessionId) }
+            : current,
+        { revalidate: false, populateCache: true }
+      );
+      setExtraSessions((prev) => prev.filter((s) => s.id !== sessionId));
+      // Server-side list shifts down by one, so the next Load more must
+      // start one offset earlier to avoid skipping the session that took
+      // this row's slot.
+      setOffset((prev) => prev - 1);
+      mutate(SIDEBAR_SESSIONS_KEY);
     } catch {
       toast.error("Failed to unarchive session");
-      mutate(ARCHIVED_SESSIONS_KEY);
     }
   };
 
@@ -87,14 +98,14 @@ export function DataControlsSettings() {
 
         {loading ? (
           <div className="flex justify-center py-8">
-            <div className="animate-spin rounded-full h-5 w-5 border-b-2 border-muted-foreground" />
+            <div className="animate-spin rounded-full h-6 w-6 border-2 border-current border-t-transparent text-muted-foreground" />
           </div>
         ) : sessions.length === 0 ? (
           <div className="py-8 text-center text-sm text-muted-foreground">
             No archived sessions. Sessions you archive will appear here.
           </div>
         ) : (
-          <div className="border border-border rounded divide-y divide-border">
+          <div className="border border-border rounded-md divide-y divide-border-muted">
             {sessions.map((session) => (
               <ArchivedSessionRow
                 key={session.id}
@@ -106,13 +117,15 @@ export function DataControlsSettings() {
         )}
 
         {hasMore && !loading && (
-          <button
+          <Button
+            variant="outline"
+            size="sm"
             onClick={handleLoadMore}
             disabled={loadingMore}
-            className="mt-4 w-full py-2 text-sm text-muted-foreground hover:text-foreground border border-border rounded hover:bg-muted transition disabled:opacity-50"
+            className="mt-4 w-full"
           >
             {loadingMore ? "Loading..." : "Load more"}
-          </button>
+          </Button>
         )}
       </div>
     </div>
@@ -140,12 +153,14 @@ function ArchivedSessionRow({
           <span className="truncate">{repoInfo}</span>
         </div>
       </Link>
-      <button
+      <Button
+        variant="outline"
+        size="xs"
         onClick={() => onUnarchive(session.id)}
-        className="flex-shrink-0 px-3 py-1.5 text-xs font-medium text-muted-foreground hover:text-foreground border border-border rounded hover:bg-background transition opacity-0 group-hover:opacity-100"
+        className="flex-shrink-0 opacity-0 group-hover:opacity-100"
       >
         Unarchive
-      </button>
+      </Button>
     </div>
   );
 }

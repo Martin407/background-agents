@@ -126,6 +126,7 @@ describe("Client WebSocket (via SELF.fetch)", () => {
 
     const subscribed = messages!.find((m) => m.type === "subscribed") as Record<string, unknown>;
     expect(subscribed).toBeDefined();
+    expect(subscribed.artifacts).toEqual([]);
     const replay = subscribed.replay as { events: unknown[]; hasMore: boolean; cursor: unknown };
     expect(replay).toBeDefined();
     expect(replay.hasMore).toBe(false);
@@ -164,6 +165,48 @@ describe("Client WebSocket (via SELF.fetch)", () => {
     expect(replay.events).toHaveLength(2);
     expect(replay.events[0].type).toBe("tool_call");
     expect(replay.events[1].type).toBe("tool_result");
+
+    ws.close();
+  });
+
+  it("subscribe hydrates persisted PR artifacts with parsed metadata and createdAt", async () => {
+    const name = `ws-client-artifacts-${Date.now()}`;
+    const { stub } = await initNamedSession(name);
+    const createdAt = Date.now() - 1000;
+
+    await queryDO(
+      stub,
+      "INSERT INTO artifacts (id, type, url, metadata, created_at) VALUES (?, ?, ?, ?, ?)",
+      "artifact-pr-1",
+      "pr",
+      "https://github.com/acme/web-app/pull/42",
+      JSON.stringify({
+        number: 42,
+        state: "open",
+        head: "feature/test",
+        base: "main",
+      }),
+      createdAt
+    );
+
+    const { ws, messages } = await openClientWs(name, { subscribe: true });
+
+    const subscribed = messages!.find((m) => m.type === "subscribed") as Record<string, unknown>;
+    expect(subscribed).toBeDefined();
+    expect(subscribed.artifacts).toEqual([
+      {
+        id: "artifact-pr-1",
+        type: "pr",
+        url: "https://github.com/acme/web-app/pull/42",
+        metadata: {
+          number: 42,
+          state: "open",
+          head: "feature/test",
+          base: "main",
+        },
+        createdAt,
+      },
+    ]);
 
     ws.close();
   });
@@ -218,6 +261,55 @@ describe("Client WebSocket (via SELF.fetch)", () => {
     expect(rows[0].source).toBe("web");
 
     ws.close();
+  });
+
+  it("closing one of multiple sockets for the same participant sends presence_update, not presence_leave", async () => {
+    const name = `ws-client-presence-multi-${Date.now()}`;
+    await initNamedSession(name);
+
+    // Two tabs for the same user → same participantId
+    const tab1 = await openClientWs(name, { subscribe: true, userId: "user-1" });
+    const tab2 = await openClientWs(name, { subscribe: true, userId: "user-1" });
+    expect(tab1.participantId).toBe(tab2.participantId);
+
+    const collector = collectMessages(tab1.ws, {
+      until: (msg) => msg.type === "presence_update" || msg.type === "presence_leave",
+      timeoutMs: 2000,
+    });
+
+    tab2.ws.close();
+
+    const messages = await collector;
+    expect(messages.some((m) => m.type === "presence_leave")).toBe(false);
+    const update = messages.find((m) => m.type === "presence_update") as Record<string, unknown>;
+    expect(update).toBeDefined();
+    const participants = update.participants as Array<{ participantId: string }>;
+    expect(participants.some((p) => p.participantId === tab1.participantId)).toBe(true);
+
+    tab1.ws.close();
+  });
+
+  it("closing the only socket for a participant broadcasts presence_leave", async () => {
+    const name = `ws-client-presence-leave-${Date.now()}`;
+    await initNamedSession(name);
+
+    // Two distinct users so the watcher remains connected after the target leaves
+    const watcher = await openClientWs(name, { subscribe: true, userId: "user-1" });
+    const leaver = await openClientWs(name, { subscribe: true, userId: "user-2" });
+
+    const collector = collectMessages(watcher.ws, {
+      until: (msg) => msg.type === "presence_leave",
+      timeoutMs: 2000,
+    });
+
+    leaver.ws.close();
+
+    const messages = await collector;
+    const leave = messages.find((m) => m.type === "presence_leave") as Record<string, unknown>;
+    expect(leave).toBeDefined();
+    expect(leave.userId).toBe("user-2");
+
+    watcher.ws.close();
   });
 
   it("sandbox event is broadcast to subscribed client", async () => {

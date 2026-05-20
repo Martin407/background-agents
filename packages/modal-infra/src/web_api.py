@@ -21,7 +21,6 @@ from .app import (
     app,
     function_image,
     github_app_secrets,
-    inspect_volume,
     internal_api_secret,
     validate_control_plane_url,
 )
@@ -110,7 +109,6 @@ def require_valid_control_plane_url(url: str | None) -> None:
 
 @app.function(
     image=function_image,
-    volumes={"/data": inspect_volume},
     secrets=[github_app_secrets, internal_api_secret],
 )
 @fastapi_endpoint(method="POST")
@@ -166,6 +164,7 @@ async def api_create_sandbox(
             opencode_session_id=request.get("opencode_session_id"),
             provider=request.get("provider", "anthropic"),
             model=request.get("model", "claude-sonnet-4-6"),
+            mcp_servers=request.get("mcp_servers"),
         )
 
         config = SandboxConfig(
@@ -181,6 +180,7 @@ async def api_create_sandbox(
             repo_image_id=request.get("repo_image_id") or None,
             repo_image_sha=request.get("repo_image_sha") or None,
             code_server_enabled=bool(request.get("code_server_enabled", False)),
+            agent_slack_notify_enabled=bool(request.get("agent_slack_notify_enabled", False)),
             settings=request.get("sandbox_settings") or None,
         )
 
@@ -223,7 +223,6 @@ async def api_create_sandbox(
 
 @app.function(
     image=function_image,
-    volumes={"/data": inspect_volume},
     secrets=[internal_api_secret],
 )
 @fastapi_endpoint(method="POST")
@@ -300,65 +299,6 @@ async def api_warm_sandbox(
 def api_health() -> dict:
     """Health check endpoint. Does not require authentication."""
     return {"success": True, "data": {"status": "healthy", "service": "open-inspect-modal"}}
-
-
-@app.function(
-    image=function_image,
-    volumes={"/data": inspect_volume},
-    secrets=[internal_api_secret],
-)
-@fastapi_endpoint(method="GET")
-def api_snapshot(
-    repo_owner: str,
-    repo_name: str,
-    authorization: str | None = Header(None),
-    x_trace_id: str | None = Header(None),
-    x_request_id: str | None = Header(None),
-    x_session_id: str | None = Header(None),
-    x_sandbox_id: str | None = Header(None),
-) -> dict:
-    """
-    Get latest snapshot for a repository.
-
-    Requires authentication via Authorization header.
-
-    Query params: ?repo_owner=...&repo_name=...
-    """
-    start_time = time.time()
-    http_status = 200
-    outcome = "success"
-
-    require_auth(authorization)
-
-    try:
-        from .registry.store import SnapshotStore
-
-        store = SnapshotStore()
-        snapshot = store.get_latest_snapshot(repo_owner, repo_name)
-
-        if snapshot:
-            return {"success": True, "data": snapshot.model_dump()}
-        return {"success": True, "data": None}
-    except Exception as e:
-        outcome = "error"
-        http_status = 500
-        log.error("api.error", exc=e, endpoint_name="api_snapshot")
-        return {"success": False, "error": str(e)}
-    finally:
-        duration_ms = int((time.time() - start_time) * 1000)
-        log.info(
-            "modal.http_request",
-            http_method="GET",
-            http_path="/api_snapshot",
-            http_status=http_status,
-            duration_ms=duration_ms,
-            outcome=outcome,
-            endpoint_name="api_snapshot",
-            trace_id=x_trace_id,
-            request_id=x_request_id,
-            session_id=x_session_id,
-            sandbox_id=x_sandbox_id,
-        )
 
 
 @app.function(image=function_image, secrets=[internal_api_secret])
@@ -528,6 +468,7 @@ async def api_restore_sandbox(
         clone_token = _resolve_clone_token()
 
         code_server_enabled = bool(request.get("code_server_enabled", False))
+        agent_slack_notify_enabled = bool(request.get("agent_slack_notify_enabled", False))
         sandbox_settings = request.get("sandbox_settings") or None
 
         # Restore sandbox from snapshot
@@ -541,6 +482,7 @@ async def api_restore_sandbox(
             user_env_vars=user_env_vars,
             timeout_seconds=timeout_seconds,
             code_server_enabled=code_server_enabled,
+            agent_slack_notify_enabled=agent_slack_notify_enabled,
             settings=sandbox_settings,
         )
 

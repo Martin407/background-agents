@@ -1,4 +1,5 @@
 import type { ArtifactRow, EventRow, MessageRow } from "../types";
+import type { ArtifactResponse } from "../../types";
 import type { SessionRepository } from "../repository";
 import type { SessionMessageQueue } from "../message-queue";
 
@@ -10,6 +11,17 @@ export interface EnqueuePromptRequest {
   reasoningEffort?: string;
   attachments?: Array<{ type: string; name: string; url?: string }>;
   callbackContext?: Record<string, unknown>;
+
+  // Identity enrichment (from router D1 lookup at prompt time)
+  authorDisplayName?: string;
+  authorEmail?: string;
+  authorLogin?: string;
+
+  // SCM token enrichment (from cross-provider identity resolution)
+  scmUserId?: string;
+  scmAccessTokenEncrypted?: string;
+  scmRefreshTokenEncrypted?: string;
+  scmTokenExpiresAt?: number;
 }
 
 export interface ListEventsRequest {
@@ -85,6 +97,23 @@ export class MessageService {
         metadata: this.deps.parseArtifactMetadata(artifact),
         createdAt: artifact.created_at,
       })),
+    };
+  }
+
+  getArtifact(artifactId: string): { artifact: ArtifactResponse | null } {
+    const artifact = this.deps.repository.getArtifactById(artifactId);
+    if (!artifact) {
+      return { artifact: null };
+    }
+
+    return {
+      artifact: {
+        id: artifact.id,
+        type: artifact.type,
+        url: artifact.url,
+        metadata: this.deps.parseArtifactMetadata(artifact),
+        createdAt: artifact.created_at,
+      },
     };
   }
 
