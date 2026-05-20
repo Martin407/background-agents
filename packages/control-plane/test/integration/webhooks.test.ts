@@ -4,6 +4,7 @@ import { AutomationStore, type AutomationRow } from "../../src/db/automation-sto
 import { hashApiKey } from "../../src/auth/webhook-key";
 import { encryptToken } from "../../src/auth/crypto";
 import { cleanD1Tables } from "./cleanup";
+import { makeAutomation } from "./automation-helpers";
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -19,35 +20,6 @@ async function signSentryPayload(body: string, secret: string): Promise<string> 
   return Array.from(new Uint8Array(sig))
     .map((b) => b.toString(16).padStart(2, "0"))
     .join("");
-}
-
-function makeAutomation(overrides: Partial<AutomationRow> = {}): AutomationRow {
-  return {
-    id: `auto-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    name: "Test Automation",
-    repo_owner: "test-owner",
-    repo_name: "test-repo",
-    base_branch: "main",
-    repo_id: 1,
-    instructions: "Test instructions",
-    trigger_type: "schedule",
-    schedule_cron: "0 9 * * *",
-    schedule_tz: "UTC",
-    model: "anthropic/claude-sonnet-4-6",
-    reasoning_effort: null,
-    enabled: 1,
-    next_run_at: null,
-    consecutive_failures: 0,
-    created_by: "test-user",
-    user_id: null,
-    created_at: Date.now(),
-    updated_at: Date.now(),
-    deleted_at: null,
-    event_type: null,
-    trigger_config: null,
-    trigger_auth_data: null,
-    ...overrides,
-  };
 }
 
 const SENTRY_TEST_SECRET = "test-sentry-client-secret-for-hmac";
