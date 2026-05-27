@@ -55,8 +55,15 @@ export class GlobalSecretsStore {
     let updated = 0;
 
     const statements: D1PreparedStatement[] = [];
-    for (const [key, value] of Object.entries(normalized)) {
-      const encrypted = await encryptToken(value, this.encryptionKey);
+
+    const encryptedEntries = await Promise.all(
+      Object.entries(normalized).map(async ([key, value]) => {
+        const encrypted = await encryptToken(value, this.encryptionKey);
+        return { key, encrypted };
+      })
+    );
+
+    for (const { key, encrypted } of encryptedEntries) {
       const isNew = !existingKeySet.has(key);
       if (isNew) created++;
       else updated++;
